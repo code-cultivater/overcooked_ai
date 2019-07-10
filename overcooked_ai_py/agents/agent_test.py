@@ -3,7 +3,7 @@ import time
 import unittest
 import numpy as np
 
-from overcooked_ai_py.agents.agent import Agent, AgentPair, FixedPlanAgent, CoupledPlanningAgent, StayAgent, RandomAgent, GreedyHumanModel
+from overcooked_ai_py.agents.agent import Agent, AgentPair, FixedPlanAgent, CoupledPlanningAgent, StayAgent, RandomAgent, GreedyHumanModel_mc
 from overcooked_ai_py.mdp.actions import Direction, Action
 from overcooked_ai_py.mdp.overcooked_mdp import OvercookedGridworld, OvercookedState, PlayerState, ObjectState
 from overcooked_ai_py.mdp.overcooked_env import OvercookedEnv
@@ -62,7 +62,7 @@ class TestAgents(unittest.TestCase):
         # it turns out that this is actually not suboptimal as the true bottleneck is 
         # going to be agent 0 later on (when it goes to get the 3rd onion)
         mlp_large = MediumLevelPlanner.from_pickle_or_compute(large_mdp, NO_COUNTERS_PARAMS, force_compute=force_compute_large)
-        a0 = GreedyHumanModel(mlp_large)
+        a0 = GreedyHumanModel_mc(mlp_large)
         a1 = CoupledPlanningAgent(mlp_large)
         agent_pair = AgentPair(a0, a1)
         start_state = OvercookedState(
@@ -77,8 +77,8 @@ class TestAgents(unittest.TestCase):
     def test_two_greedy_human_open_map(self):
         scenario_2_mdp = OvercookedGridworld.from_layout_name('scenario2', start_order_list=['any'], cook_time=5)
         mlp = MediumLevelPlanner.from_pickle_or_compute(scenario_2_mdp, NO_COUNTERS_PARAMS, force_compute=force_compute)        
-        a0 = GreedyHumanModel(mlp)
-        a1 = GreedyHumanModel(mlp)
+        a0 = GreedyHumanModel_mc(mlp)
+        a1 = GreedyHumanModel_mc(mlp)
         agent_pair = AgentPair(a0, a1)
         start_state = OvercookedState(
             [P((8, 1), s),
@@ -137,7 +137,7 @@ class TestScenarios(unittest.TestCase):
         # realize that it should retrace it's steps at some point)
         scenario_1_mdp = OvercookedGridworld.from_layout_name('small_corridor', start_order_list=['any'], cook_time=5)
         mlp = MediumLevelPlanner.from_pickle_or_compute(scenario_1_mdp, NO_COUNTERS_PARAMS, force_compute=force_compute)
-        a0 = GreedyHumanModel(mlp)
+        a0 = GreedyHumanModel_mc(mlp)
         a1 = CoupledPlanningAgent(mlp)
         agent_pair = AgentPair(a0, a1)
         start_state = OvercookedState(
@@ -152,7 +152,7 @@ class TestScenarios(unittest.TestCase):
         #
         scenario_1_mdp = OvercookedGridworld.from_layout_name('scenario1_s', start_order_list=['any'], cook_time=5)
         mlp = MediumLevelPlanner.from_pickle_or_compute(scenario_1_mdp, NO_COUNTERS_PARAMS, force_compute=force_compute)
-        a0 = GreedyHumanModel(mlp)
+        a0 = GreedyHumanModel_mc(mlp)
         a1 = CoupledPlanningAgent(mlp)
         agent_pair = AgentPair(a0, a1)
         start_state = OvercookedState(
