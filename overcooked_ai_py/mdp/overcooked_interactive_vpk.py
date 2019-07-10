@@ -1,17 +1,15 @@
 import pygame
+import random
 from argparse import ArgumentParser
 
-# TODO: Think about how to deal with this
-from hr_coordination.pbt.pbt_utils import load_baselines_model, get_agent_from_saved_model, setup_mdp_env, get_config_from_pbt_dir
-from hr_coordination.ppo.ppo import get_ppo_agent
-from hr_coordination.imitation.behavioural_cloning import get_bc_agent_from_saved
-
+from overcooked_ai_py.agents.agent import StayAgent, RandomAgent, AgentFromPolicy, GreedyHumanModelv2, \
+    SimpleComplementaryModel, AdvancedComplementaryModel
 from overcooked_ai_py.mdp.overcooked_mdp import OvercookedGridworld, Direction, Action
 from overcooked_ai_py.mdp.overcooked_env import OvercookedEnv
-from overcooked_ai_py.agents.agent import StayAgent, RandomAgent, AgentFromPolicy, GreedyHumanModel
 from overcooked_ai_py.planning.planners import MediumLevelPlanner
-from overcooked_ai_py.mdp.layout_generator import LayoutGenerator
-from overcooked_ai_py.utils import load_dict_from_file, get_max_iter
+from overcooked_ai_py.utils import load_dict_from_file #, get_max_iter
+
+
 
 UP = 273
 RIGHT = 275
@@ -47,8 +45,8 @@ class App:
         self.env = env
         self.agent = agent
         self.agent_idx = player_idx
-        print(player_idx)
- 
+        self.size = self.weight, self.height = 1, 1
+
     def on_init(self):
         pygame.init()
 
@@ -67,6 +65,7 @@ class App:
         #         order_list=['onion'])
     
         print(self.env)
+        self._display_surf = pygame.display.set_mode(self.size, pygame.HWSURFACE | pygame.DOUBLEBUF)
         self._running = True
  
     def on_event(self, event):
@@ -76,29 +75,21 @@ class App:
             pressed_key = event.dict['key']
             action = None
 
-            if pressed_key == UP:
+            if pressed_key == UP or pressed_key == ord('w'):
                 action = Direction.NORTH
-            elif pressed_key == RIGHT:
+            elif pressed_key == RIGHT or pressed_key == ord('d'):
                 action = Direction.EAST
-            elif pressed_key == DOWN:
+            elif pressed_key == DOWN or pressed_key == ord('s'):
                 action = Direction.SOUTH
-            elif pressed_key == LEFT:
+            elif pressed_key == LEFT or pressed_key == ord('a'):
                 action = Direction.WEST
             elif pressed_key == SPACEBAR:
                 action = Action.INTERACT
                 
             if action in Action.ALL_ACTIONS:
-                
                 done = self.step_env(action)
-                if not done:
-                    for _ in range(2):
-                        action = Direction.STAY
-                        done = self.step_env(action)
-                        if done:
-                            break
 
         if event.type == pygame.QUIT or done:
-            print("TOT rew", self.env.cumulative_rewards)
             self._running = False
 
 
@@ -114,8 +105,9 @@ class App:
         s_t, r_t, done, info = self.env.step(joint_action)
 
         print(self.env)
-        print("Curr reward: (sparse)", r_t, "\t(dense)", info["dense_r"])
-        print(self.env.t)
+        # Changed from this: print("Curr reward: (sparse)", r_t, "\t(dense)", info["dense_r"])
+        print("Curr reward: (sparse)", r_t, "\t(dense)", info["shaped_r"])
+        print("Time: {}".format(self.env.t))
         # process_observations([next_state], self.env.mdp, 0, debug=True)
         # print("Pos", next_state.player_positions[1])
         # print("Heuristic: ", self.hlp.hard_heuristic_fn(next_state, 1))
@@ -141,11 +133,7 @@ class App:
         self.on_cleanup()
  
 def setup_game(run_type, run_dir, cfg_run_dir, run_seed, agent_num, player_idx):
-    if run_type == "ppo":
-        print("Seed", run_seed)
-        agent, evaluator = get_ppo_agent(run_dir, run_seed, best=True)
-        env = evaluator.env
-    elif run_type in ["pbt", "ppo"]:
+    if run_type in ["pbt", "ppo"]:
         # TODO: Add testing for this
         run_path = "data/" + run_type + "_runs/" + run_dir + "/seed_{}".format(run_seed)
         # TODO: use get_config_from_pbt_dir if will be split up for the two cases
@@ -157,46 +145,102 @@ def setup_game(run_type, run_dir, cfg_run_dir, run_seed, agent_num, player_idx):
 
         if config["FIXED_MDP"]:
             layout_name = config["FIXED_MDP"]
-            config["ORDER_GOAL"] = config["ORDER_GOAL"] * 3
-            mdp = OvercookedGridworld.from_file(layout_name, config["ORDER_GOAL"], config["EXPLOSION_TIME"], rew_shaping_params=None)
-            env = OvercookedEnv(mdp, horizon=604, random_start_objs=False, random_start_pos=False)
+            layout_filepath = "data/layouts/{}.layout".format(layout_name)
+            mdp = OvercookedGridworld.from_file(layout_filepath, config["ORDER_GOAL"], config["EXPLOSION_TIME"], rew_shaping_params=None)
+            env = OvercookedEnv(mdp)
         else:
             env = setup_mdp_env(display=False, **config)
 
     elif run_type == "bc":
-        # config = get_config_from_pbt_dir(cfg_run_dir)
+        config = get_config_from_pbt_dir(cfg_run_dir)
 
-        # # Modifications from original pbt config
-        # config["ENV_HORIZON"] = 1000
+        # Modifications from original pbt config
+        config["ENV_HORIZON"] = 1000
 
-        # gym_env, _ = get_env_and_policy_fn(config)
-        # env = gym_env.base_env
+        gym_env, _ = get_env_and_policy_fn(config)
+        env = gym_env.base_env
     
-        # model_path = 'data/bc_runs/' + run_dir #test_BC'
-        agent, env_params, data_params = get_bc_agent_from_saved(run_dir)
-        env = OvercookedEnv.from_config(env_params)
+        model_path = run_dir #'data/bc_runs/test_BC'
+        agent = get_agent_from_saved_BC(cfg_run_dir, model_path, stochastic=True)
+
+    elif run_type == "hardcoded":
+
+        cook_time = 5
+
+        if layout == 'sc1':
+
+            # Setup mdp
+            mdp = OvercookedGridworld.from_layout_name('scenario1_s', start_order_list=["any", "any", "any"],
+                                                       cook_time=cook_time, rew_shaping_params=None)
+
+        elif layout == 'uni':
+
+            # start_state = OvercookedState([P((2, 2), n), P((5, 2), n)], {}, order_list=start_order_list)
+            # Setup mdp
+            mdp = OvercookedGridworld.from_layout_name('unident_s', start_order_list=["any", "any", "any"],
+                                                       cook_time=cook_time, rew_shaping_params=None)
+
+        elif layout == 'sim':
+
+            # Setup mdp
+            mdp = OvercookedGridworld.from_layout_name('simple', start_order_list=["any", "any", "any"],
+                                                       cook_time=cook_time, rew_shaping_params=None)
+
+        elif layout == 'ran':
+
+            # Setup mdp
+            mdp = OvercookedGridworld.from_layout_name('random1', start_order_list=["any", "any", "any"],
+                                                       cook_time=cook_time, rew_shaping_params=None)
+
+        elif layout == 'sch':
+
+            # Setup mdp
+            mdp = OvercookedGridworld.from_layout_name('schelling_s', start_order_list=["any", "any", "any"],
+                                                       cook_time=cook_time, rew_shaping_params=None)
+
+        else:
+            raise ValueError('layout not recognised')
+
+        env = OvercookedEnv(mdp)
+        # Doing this means that all counter locations are allowed to have objects dropped on them AND be "goals" (I think!)
+        no_counters_params['counter_drop'] = mdp.get_counter_locations()
+        no_counters_params['counter_goals'] = mdp.get_counter_locations()
+        mlp = MediumLevelPlanner.from_pickle_or_compute(mdp, no_counters_params, force_compute=False)
+
+        perseverance0 = random.random()
+        teamwork0 = random.random()
+        retain_goals0 = random.random()
+        wrong_decisions0 = random.random() ** 5
+        thinking_prob0 = 1 - random.random() **5
+        path_teamwork0 = 1 - random.random() **2
+        rat_coeff0 = 1+random.random()*3
+
+        agent = AdvancedComplementaryModel(mlp, player_index=0, perseverance=perseverance0, teamwork=teamwork0,
+                                           retain_goals=retain_goals0, wrong_decisions=wrong_decisions0,
+                                           thinking_prob=thinking_prob0, path_teamwork=path_teamwork0,
+                                           rationality_coefficient=rat_coeff0)
+
+        print('Ply 1: tw: {:.1f}, retain: {:.1f}, wrong dec: {:.1f}, think: {:.1f}, path_tw: {:.1f}, rat: {:.1f}'.
+              format(teamwork0, retain_goals0, wrong_decisions0, thinking_prob0, path_teamwork0,
+                     rat_coeff0))
+
     else:
         raise ValueError("Unrecognized run type")
 
-    env.horizon = 604
     return env, agent, player_idx
 
 if __name__ == "__main__" :
     """
     Sample commands
-    -> pbt
-    python mdp/overcooked_interactive_mc.py -t pbt -r scenario2_best -a 0 
-    ->
-    python mdp/overcooked_interactive_mc.py -t ppo -r 2019_05_04-10_32_37_rand1_rew_shape -s 1
-    -> BC
-    python mdp/overcooked_interactive_mc.py -t bc -r data/bc_runs/bc_run -c 2019_03_17-18_52_13_undefined_name  -a 0   
+    -> hardcoded
+    python mdp/overcooked_interactive_vpk.py -t hardcoded -l sim
     """
     parser = ArgumentParser()
     # parser.add_argument("-l", "--fixed_mdp", dest="layout",
     #                     help="name of the layout to be played as found in data/layouts",
     #                     required=True)
     parser.add_argument("-t", "--type", dest="type",
-                        help="type of run, (i.e. pbt, bc, ppo, etc)", required=True)
+                        help="type of run, (i.e. pbt, bc, ppo, hardcoded, etc)", required=True)
     parser.add_argument("-r", "--run_dir", dest="run",
                         help="name of run dir in data/*_runs/", required=True)
     parser.add_argument("-c", "--config_run_dir", dest="cfg",
@@ -204,10 +248,13 @@ if __name__ == "__main__" :
     parser.add_argument("-s", "--seed", dest="seed", default=0)
     parser.add_argument("-a", "--agent_num", dest="agent_num", default=0)
     parser.add_argument("-i", "--idx", dest="idx", default=0)
+    parser.add_argument("-l", "--layout", default='sim')
 
     args = parser.parse_args()
-    run_type, run_dir, cfg_run_dir, run_seed, agent_num, player_idx = args.type, args.run, args.cfg, int(args.seed), int(args.agent_num), int(args.idx)
-    
+    run_type, run_dir, cfg_run_dir, run_seed, agent_num, player_idx, layout = args.type, args.run, args.cfg, \
+                                                                             int(args.seed), int(args.agent_num), \
+                                                                              int(args.idx), args.layout
+
     env, agent, player_idx = setup_game(run_type, run_dir, cfg_run_dir, run_seed, agent_num, player_idx)
     
     theApp = App(env, agent, player_idx)

@@ -200,7 +200,8 @@ class OvercookedEnv(object):
         for _ in tqdm.trange(num_games):
             agent_pair.set_mdp(self.mdp)
 
-            trajectory, time_taken, tot_rews_sparse, tot_rews_shaped = self.run_agents(agent_pair, display=display, include_final_state=final_state)
+            trajectory, time_taken, tot_rews_sparse, tot_rews_shaped = self.run_agents(agent_pair, display=display,
+                                                                                       include_final_state=final_state)
             obs, actions, rews, dones = trajectory.T[0], trajectory.T[1], trajectory.T[2], trajectory.T[3]
             trajectories["ep_observations"].append(obs)
             trajectories["ep_actions"].append(actions)
