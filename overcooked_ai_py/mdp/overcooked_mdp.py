@@ -1049,7 +1049,8 @@ class OvercookedGridworld(object):
         base_map_features = ["pot_loc", "counter_loc", "onion_disp_loc", "dish_disp_loc", "serve_loc"]
         variable_map_features = ["onions_in_pot", "onions_cook_time", "onion_soup_loc", "dishes", "onions"]
 
-        all_objects = list(overcooked_state.objects.values())
+        # Moved inside process_for_player, otherwise objects can get counted twice
+        # all_objects = list(overcooked_state.objects.values())
 
         def make_layer(position, value):
             layer = np.zeros(self.shape)
@@ -1057,6 +1058,8 @@ class OvercookedGridworld(object):
             return layer
 
         def process_for_player(primary_agent_idx):
+
+            all_objects = list(overcooked_state.objects.values())
             # Ensure that primary_agent_idx layers are ordered before other_agent_idx layers
             other_agent_idx = 1 - primary_agent_idx
             ordered_player_features = ["player_{}_loc".format(primary_agent_idx),
@@ -1164,6 +1167,10 @@ class OvercookedGridworld(object):
                     state_from_obs_from_state.objects[loc].state = (state_from_obs_from_state.objects[loc].state[0],
                                                                     state_from_obs_from_state.objects[loc].state[1],
                                                                     state.objects[loc].state[2])
+
+        # if state.players != state_from_obs_from_state.players:
+        #     print('Not equal!!')
+        #     print('...')
         assert state.players == state_from_obs_from_state.players
         assert state.objects == state_from_obs_from_state.objects
 

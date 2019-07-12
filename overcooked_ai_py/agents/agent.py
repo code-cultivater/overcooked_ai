@@ -1244,7 +1244,6 @@ class AdvancedComplementaryModel(Agent):
     - with prob path_teamwork, factor in the other player (assuming Greedy) when finding the best path
     Adding:
     - Take a sub-optimal first action with Boltzmann rational probability
-
     """
 
     def __init__(self, mlp, player_index,
@@ -1260,6 +1259,8 @@ class AdvancedComplementaryModel(Agent):
         self.prev_best_action = None
         self.GHM = GreedyHumanModelv2(self.mlp, player_index=1-self.agent_index)  # For factoring in the other players path
 
+        self.human_model = True
+
         # "Personality" parameters (within 0 to 1)
         self.perseverance = perseverance  # perseverance = 1 means the agent always tries to go where it want to do, even when it's stuck
         self.teamwork = teamwork  # teamwork = 0 should make this agent v similar to GreedyHuman
@@ -1273,21 +1274,28 @@ class AdvancedComplementaryModel(Agent):
         self.rationality_coefficient = rationality_coefficient  # Setting to 0 means random actions; inf means always takes
         # lowest cost path. In practice inf ~ 100
 
-    def direct_action(self, observation):
-        """Required for running with pbt. Each observation is a 25 (?) layered "mask" that is sent to the CNN for the ppo
-        agents. The first dimension of observation is n=SIM_THREADS.
-        :return: n actions"""
-        #TODO: Check that the first dimension of observation is indeed SIM_THREADS
-        actions = []
-        for i in range(observation.shape[0]):  # for each SIM_THREAD
-            obs = observation[i, :, :, :]  # Select the SIM THREAD observation
-            state = self.mdp.state_from_observation(obs, self.agent_index)  # Find the state
-            # According to Overcooked.step in overcooked_env.py, the action should be "in index format":
-            this_action = self.action(state)
-            this_action = Action.ACTION_TO_INDEX[this_action]
-            actions.append(this_action)
+    # def direct_action(self, observation):
+    #     """Required for running with pbt. Each observation is a 25 (?) layered "mask" that is sent to the CNN for the ppo
+    #     agents. The first dimension of observation is n=SIM_THREADS.
+    #     :return: n actions"""
+    #     #TODO: Check that the first dimension of observation is indeed SIM_THREADS
+    #     actions = []
+    #     for i in range(observation.shape[0]):  # for each SIM_THREAD
+    #         obs = observation[i, :, :, :]  # Select the SIM THREAD observation
+    #         state = self.mdp.state_from_observation(obs, self.agent_index)  # Find the state
+    #         # According to Overcooked.step in overcooked_env.py, the action should be "in index format":
+    #         this_action = self.action(state)
+    #         this_action = Action.ACTION_TO_INDEX[this_action]
+    #         actions.append(this_action)
+    #
+    #     return np.array(actions)
 
-        return np.array(actions)
+    def multiple_thread_action(self, multi_thread_state):
+        """Takes multiple states and outputs multiple actions"""
+        actions=[]
+        for i in range(multi_thread_state.__len__()):
+            actions.append(self.action(multi_thread_state[i]))
+        return actions
 
     def action(self, state):
 
