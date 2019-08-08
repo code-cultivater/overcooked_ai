@@ -207,13 +207,22 @@ def setup_game(run_type, run_dir, cfg_run_dir, run_seed, agent_num, player_idx):
         no_counters_params['counter_goals'] = mdp.get_counter_locations()
         mlp = MediumLevelPlanner.from_pickle_or_compute(mdp, no_counters_params, force_compute=False)
 
-        perseverance0 = random.random()
-        teamwork0 = random.random()
-        retain_goals0 = random.random()
-        wrong_decisions0 = random.random() ** 5
-        thinking_prob0 = 1 - random.random() **5
-        path_teamwork0 = 1 - random.random() **2
-        rat_coeff0 = 1+random.random()*3
+        # perseverance0 = random.random()
+        # teamwork0 = random.random()
+        # retain_goals0 = random.random()
+        # wrong_decisions0 = random.random() ** 5
+        # thinking_prob0 = 1 - random.random() **5
+        # path_teamwork0 = 1 - random.random() **2
+        # rat_coeff0 = 1+random.random()*3
+
+        perseverance0 = 0.3
+        teamwork0 = 0.3
+        retain_goals0 = 0.8
+        wrong_decisions0 = 0.05
+        thinking_prob0 = 0.5
+        path_teamwork0 = 0.3
+        rat_coeff0 = 1.5
+
 
         agent = AdvancedComplementaryModel(mlp, player_index=0, perseverance=perseverance0, teamwork=teamwork0,
                                            retain_goals=retain_goals0, wrong_decisions=wrong_decisions0,
