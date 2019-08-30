@@ -1290,12 +1290,14 @@ class AdvancedComplementaryModel(Agent):
     #
     #     return np.array(actions)
 
-    def multiple_thread_action(self, multi_thread_state):
-        """Takes multiple states and outputs multiple actions"""
-        actions=[]
-        for i in range(multi_thread_state.__len__()):
-            actions.append(self.action(multi_thread_state[i]))
-        return actions
+    # NO LONGER NEED THIS (we want each agent to do one action, not one agent to do different actions for differnet
+    # states!)
+    # def multiple_thread_action(self, multi_thread_state):
+    #     """Takes multiple states and outputs multiple actions"""
+    #     actions=[]
+    #     for i in range(multi_thread_state.__len__()):
+    #         actions.append(self.action(multi_thread_state[i]))
+    #     return actions
 
     def action(self, state):
 
