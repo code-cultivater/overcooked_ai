@@ -7,6 +7,7 @@ import logging
 
 from overcooked_ai_py.mdp.actions import Action, Direction
 from overcooked_ai_py.mdp.overcooked_mdp import OvercookedState
+from overcooked_ai_py.mdp.overcooked_env import OvercookedEnv
 from overcooked_ai_py.planning.planners import MediumLevelPlanner, Heuristic
 
 
@@ -1278,7 +1279,7 @@ class AdvancedComplementaryModel(Agent):
     #     """Required for running with pbt. Each observation is a 25 (?) layered "mask" that is sent to the CNN for the ppo
     #     agents. The first dimension of observation is n=SIM_THREADS.
     #     :return: n actions"""
-    #     #TODO: Check that the first dimension of observation is indeed SIM_THREADS
+    #     # to do: Check that the first dimension of observation is indeed SIM_THREADS
     #     actions = []
     #     for i in range(observation.shape[0]):  # for each SIM_THREAD
     #         obs = observation[i, :, :, :]  # Select the SIM THREAD observation
@@ -1300,6 +1301,32 @@ class AdvancedComplementaryModel(Agent):
     #     return actions
 
     def action(self, state):
+
+        # Display the game during training:
+        try:
+            self.display
+            overcooked_env = OvercookedEnv(self.mdp)
+            overcooked_env.state = state
+            print('TRAINING GAME WITH HM. HM index: {}'.format(self.agent_index))
+            print(overcooked_env)
+        except:
+            AttributeError # self.display = False
+
+        # To determine whether the same HM is used for several different envs during multiple_thread_action when
+        # training the ppo using sim_threads. Answer: SAME HM is used accross DIFFERENT states, which is wrong!
+        # try:
+        #     self.stamp
+        # except AttributeError:
+        #     self.stamp = 0
+        # print('...next iter...')
+        # print('Previous best action: {}'.format(self.prev_best_action))
+        # print('Previous state:')
+        # print(self.prev_state)
+        # print('Current state:')
+        # print(state)
+        # print('Previous stamp: {}; index: {}'.format(self.stamp, self.agent_index))
+        # self.stamp = round(np.random.rand()*10**4)
+        # print('Next stamp....: {}'.format(self.stamp))
 
         logging.info('Player: {}'.format(self.agent_index))
         logging.info('Other GHM: {}'.format(self.GHM.agent_index))
