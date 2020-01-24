@@ -1,7 +1,8 @@
 import itertools, copy
 import numpy as np
+from functools import reduce
 from collections import defaultdict
-from overcooked_ai_py.utils import pos_distance, load_dict_from_file, save_as_json, load_from_json
+from overcooked_ai_py.utils import pos_distance, load_from_json
 from overcooked_ai_py.data.layouts import read_layout_dict
 from overcooked_ai_py.mdp.actions import Action, Direction
 
@@ -23,12 +24,11 @@ class ObjectState(object):
             (soup_type, num_items, cook_time)
             where cook_time is how long the soup has been cooking for.
         """
-        assert type(position) == tuple
         self.name = name
-        self.position = position
+        self.position = tuple(position)
         if name == 'soup':
             assert len(state) == 3
-        self.state = state
+        self.state = None if state is None else tuple(state)
 
     def is_valid(self):
         if self.name in ['onion', 'tomato', 'dish']:
@@ -69,6 +69,7 @@ class ObjectState(object):
 
     @staticmethod
     def from_dict(obj_dict):
+        obj_dict = copy.deepcopy(obj_dict)
         return ObjectState(**obj_dict)
 
 
@@ -82,15 +83,14 @@ class PlayerState(object):
                  None if there is no such object.
     """
     def __init__(self, position, orientation, held_object=None):
-        assert type(position) == tuple
-        assert orientation in Direction.ALL_DIRECTIONS
-        if held_object is not None:
-            assert isinstance(held_object, ObjectState)
-            assert held_object.position == position
-
-        self.position = position
-        self.orientation = orientation
+        self.position = tuple(position)
+        self.orientation = tuple(orientation)
         self.held_object = held_object
+
+        assert self.orientation in Direction.ALL_DIRECTIONS
+        if self.held_object is not None:
+            assert isinstance(self.held_object, ObjectState)
+            assert self.held_object.position == self.position
 
     @property
     def pos_and_or(self):
@@ -146,7 +146,10 @@ class PlayerState(object):
 
     @staticmethod
     def from_dict(player_dict):
-        player_dict["held_object"] = ObjectState.from_dict(player_dict["held_object"])
+        player_dict = copy.deepcopy(player_dict)
+        held_obj = player_dict["held_object"]
+        if held_obj is not None:
+            player_dict["held_object"] = ObjectState.from_dict(held_obj)
         return PlayerState(**player_dict)
 
 
@@ -219,6 +222,23 @@ class OvercookedState(object):
         all_objs_by_type.update(self.player_objects_by_type)
         return all_objs_by_type
 
+    @property
+    def all_objects_list(self):
+        all_objects_lists = list(self.all_objects_by_type.values()) + [[], []]
+        return reduce(lambda x, y: x + y, all_objects_lists)
+
+    @property
+    def curr_order(self):
+        return "any" if self.order_list is None else self.order_list[0]
+
+    @property
+    def next_order(self):
+        return "any" if self.order_list is None else self.order_list[1]
+
+    @property
+    def num_orders_remaining(self):
+        return np.Inf if self.order_list is None else len(self.order_list)
+
     def has_object(self, pos):
         return pos in self.objects
 
@@ -276,8 +296,9 @@ class OvercookedState(object):
             order_list_equal
 
     def __hash__(self):
+        order_list_hash = tuple(self.order_list) if self.order_list is not None else None
         return hash(
-            (self.players, tuple(self.objects.values()), tuple(self.order_list))
+            (self.players, tuple(self.objects.values()), order_list_hash)
         )
 
     def __str__(self):
@@ -293,8 +314,10 @@ class OvercookedState(object):
 
     @staticmethod
     def from_dict(state_dict):
+        state_dict = copy.deepcopy(state_dict)
         state_dict["players"] = [PlayerState.from_dict(p) for p in state_dict["players"]]
-        state_dict["objects"] = [ObjectState.from_dict(o) for o in state_dict["objects"]]
+        object_list = [ObjectState.from_dict(o) for o in state_dict["objects"]]
+        state_dict["objects"] = { ob.position : ob for ob in object_list }
         return OvercookedState(**state_dict)
     
     @staticmethod
@@ -340,6 +363,7 @@ class OvercookedGridworld(object):
         self.terrain_mtx = terrain
         self.terrain_pos_dict = self._get_terrain_type_pos_dict()
         self.start_player_positions = start_player_positions
+        self.num_players = len(start_player_positions)
         self.start_order_list = start_order_list
         self.soup_cooking_time = cook_time
         self.num_items_for_soup = num_items_for_soup
@@ -361,13 +385,26 @@ class OvercookedGridworld(object):
         return OvercookedGridworld(
             terrain=self.terrain_mtx.copy(),
             start_player_positions=self.start_player_positions,
-            start_order_list=list(self.start_order_list),
+            start_order_list=None if self.start_order_list is None else list(self.start_order_list),
             cook_time=self.soup_cooking_time,
             num_items_for_soup=self.num_items_for_soup,
             delivery_reward=self.delivery_reward,
             rew_shaping_params=copy.deepcopy(self.reward_shaping_params),
             layout_name=self.layout_name
         )
+
+    @property
+    def mdp_params(self):
+        return {
+            "layout_name": self.layout_name,
+            "terrain": self.terrain_mtx,
+            "start_player_positions": self.start_player_positions,
+            "start_order_list": self.start_order_list,
+            "cook_time": self.soup_cooking_time,
+            "num_items_for_soup": self.num_items_for_soup,
+            "delivery_reward": self.delivery_reward,
+            "rew_shaping_params": copy.deepcopy(self.reward_shaping_params)
+        }
 
     @staticmethod
     def from_layout_name(layout_name, **params_to_overwrite):
@@ -400,19 +437,21 @@ class OvercookedGridworld(object):
         layout_grid = [[c for c in row] for row in layout_grid]
         OvercookedGridworld._assert_valid_grid(layout_grid)
 
-        player_positions = [None, None]
+        player_positions = [None] * 9
         for y, row in enumerate(layout_grid):
             for x, c in enumerate(row):
-                if c in ['1', '2']:
+                if c in ['1', '2', '3', '4', '5', '6', '7', '8', '9']:
                     layout_grid[y][x] = ' '
+
+                    # -1 is to account for fact that player indexing starts from 1 rather than 0
                     assert player_positions[int(c) - 1] is None, 'Duplicate player in grid'
                     player_positions[int(c) - 1] = (x, y)
 
+        num_players = len([x for x in player_positions if x is not None])
+        player_positions = player_positions[:num_players]
+
         # After removing player positions from grid we have a terrain mtx
         mdp_config["terrain"] = layout_grid
-
-        assert all(position is not None for position in player_positions), 'A player was missing'
-
         mdp_config["start_player_positions"] = player_positions
 
         for k, v in params_to_overwrite.items():
@@ -458,9 +497,9 @@ class OvercookedGridworld(object):
 
             start_state = OvercookedState.from_player_positions(start_pos, order_list=self.start_order_list)
 
-            if rnd_obj_prob_thresh != 0:
+            if rnd_obj_prob_thresh == 0:
                 return start_state
-            
+
             # Arbitrary hard-coding for randomization of objects
             # For each pot, add a random amount of onions with prob rnd_obj_prob_thresh
             pots = self.get_pot_states(start_state)["empty"]
@@ -495,11 +534,11 @@ class OvercookedGridworld(object):
         return self.terrain_pos_dict[' ']
 
     def get_valid_joint_player_positions(self):
-        """Returns all valid tuples of the form (p0_pos, p1_pos)"""
-        valid_positions = self.get_valid_player_positions()
-        all_joint_positions = itertools.product(valid_positions, valid_positions)
-        valid_joint = [(pos0, pos1) for pos0, pos1 in all_joint_positions if pos0 != pos1]
-        return valid_joint
+        """Returns all valid tuples of the form (p0_pos, p1_pos, p2_pos, ...)"""
+        valid_positions = self.get_valid_player_positions() 
+        all_joint_positions = list(itertools.product(valid_positions, repeat=self.num_players))
+        valid_joint_positions = [j_pos for j_pos in all_joint_positions if not self.is_joint_position_collision(j_pos)]
+        return valid_joint_positions
 
     def get_valid_player_positions_and_orientations(self):
         valid_states = []
@@ -513,10 +552,10 @@ class OvercookedGridworld(object):
         valid_player_states = self.get_valid_player_positions_and_orientations()
 
         valid_joint_player_states = []
-        for pos_and_or_0, pos_and_or_1 in itertools.product(valid_player_states, repeat=2):
-            p0_pos, p1_pos = pos_and_or_0[0], pos_and_or_1[0]
-            if p0_pos != p1_pos:
-                valid_joint_player_states.append((pos_and_or_0, pos_and_or_1))
+        for players_pos_and_orientations in itertools.product(valid_player_states, repeat=self.num_players):
+            joint_position = [plyer_pos_and_or[0] for plyer_pos_and_or in players_pos_and_orientations]
+            if not self.is_joint_position_collision(joint_position):
+                valid_joint_player_states.append(players_pos_and_orientations)
 
         return valid_joint_player_states
 
@@ -602,10 +641,11 @@ class OvercookedGridworld(object):
         counter_locations = self.get_counter_locations()
         return [pos for pos in counter_locations if not state.has_object(pos)]
 
-    def get_transition_states_and_probs(self, state, joint_action):
+    def get_state_transition(self, state, joint_action):
         """Gets information about possible transitions for the action.
 
         Returns the next state, sparse reward and reward shaping.
+        Assumes all actions are deterministic.
 
         NOTE: Sparse reward is given only when soups are delivered, 
         shaped reward is given only for completion of subgoals 
@@ -649,6 +689,7 @@ class OvercookedGridworld(object):
 
         sparse_reward, shaped_reward = 0, 0
         for player, action in zip(new_state.players, joint_action):
+
             if action != Action.INTERACT:
                 continue
 
@@ -754,15 +795,21 @@ class OvercookedGridworld(object):
         new_positions = self._handle_collisions(old_positions, new_positions)
         return new_positions, new_orientations
 
-    def is_collision(self, old_positions, new_positions):
-        p1_old, p2_old = old_positions
-        p1_new, p2_new = new_positions
-        if p1_new == p2_new:
+    def is_transition_collision(self, old_positions, new_positions):
+        # Checking for any players ending in same square
+        if self.is_joint_position_collision(new_positions):
             return True
-        elif p1_new == p2_old and p1_old == p2_new:
-            return True
+        # Check if any two players crossed paths
+        for idx0, idx1 in itertools.combinations(range(self.num_players), 2):
+            p1_old, p2_old = old_positions[idx0], old_positions[idx1]
+            p1_new, p2_new = new_positions[idx0], new_positions[idx1]
+            if p1_new == p2_old and p1_old == p2_new:
+                return True
         return False
 
+    def is_joint_position_collision(self, joint_position):
+        return any(pos0 == pos1 for pos0, pos1 in itertools.combinations(joint_position, 2))
+            
     def step_environment_effects(self, state):
         reward = 0
         for obj in state.objects.values():
@@ -778,7 +825,7 @@ class OvercookedGridworld(object):
 
     def _handle_collisions(self, old_positions, new_positions):
         """If agents collide, they stay at their old locations"""
-        if self.is_collision(old_positions, new_positions):
+        if self.is_transition_collision(old_positions, new_positions):
             return old_positions
         return new_positions
 
@@ -792,7 +839,7 @@ class OvercookedGridworld(object):
     def _move_if_direction(self, position, orientation, action):
         """Returns position and orientation that would 
         be obtained after executing action"""
-        if action == Action.INTERACT:
+        if action not in Action.MOTION_ACTIONS:
             return position, orientation
         new_pos = Action.move_in_direction(position, action)
         new_orientation = orientation if action == Action.STAY else action
@@ -837,6 +884,18 @@ class OvercookedGridworld(object):
         for obj_state in all_objects:
             assert obj_state.is_valid()
 
+    def find_free_counters_valid_for_both_players(self, state, mlp):
+        """Finds all empty counter locations that are accessible to both players"""
+        one_player, other_player = state.players
+        free_counters = self.get_empty_counter_locations(state)
+        free_counters_valid_for_both = []
+        for free_counter in free_counters:
+            goals = mlp.mp.motion_goals_for_pos[free_counter]
+            if any([mlp.mp.is_valid_motion_start_goal_pair(one_player.pos_and_or, goal) for goal in goals]) and \
+            any([mlp.mp.is_valid_motion_start_goal_pair(other_player.pos_and_or, goal) for goal in goals]):
+                free_counters_valid_for_both.append(free_counter)
+        return free_counters_valid_for_both
+
     @staticmethod
     def _assert_valid_grid(grid):
         """Raises an AssertionError if the grid is invalid.
@@ -865,9 +924,15 @@ class OvercookedGridworld(object):
             assert is_not_free(grid[-1][x]), 'Bottom border must not be free'
 
         all_elements = [element for row in grid for element in row]
-        assert all(c in 'XOPDST12 ' for c in all_elements), 'Invalid character in grid'
+        digits = ['1', '2', '3', '4', '5', '6', '7', '8', '9']
+        layout_digits = [e for e in all_elements if e in digits]
+        num_players = len(layout_digits)
+        assert num_players > 0, "No players (digits) in grid"
+        layout_digits = list(sorted(map(int, layout_digits)))
+        assert layout_digits == list(range(1, num_players + 1)), "Some players were missing"
+
+        assert all(c in 'XOPDST123456789 ' for c in all_elements), 'Invalid character in grid'
         assert all_elements.count('1') == 1, "'1' must be present exactly once"
-        assert all_elements.count('2') == 1, "'2' must be present exactly once"
         assert all_elements.count('D') >= 1, "'D' must be present at least once"
         assert all_elements.count('S') >= 1, "'S' must be present at least once"
         assert all_elements.count('P') >= 1, "'P' must be present at least once"
@@ -894,7 +959,9 @@ class OvercookedGridworld(object):
                     if player_object:
                         grid_string += player_object.name[:1]
                     else:
-                        grid_string += str(0) if player.position == state.players[0].position else str(1)
+                        player_idx_lst = [i for i, p in enumerate(state.players) if p.position == player.position]
+                        assert len(player_idx_lst) == 1
+                        grid_string += str(player_idx_lst[0])
                 else:
                     if element == "X" and state.has_object((x, y)):
                         state_obj = state.get_object((x, y))
@@ -924,9 +991,7 @@ class OvercookedGridworld(object):
 
             grid_string += "\n"
         
-        if state.order_list is None:
-            grid_string += "No order goal!"
-        else:
+        if state.order_list is not None:
             grid_string += "Current orders: {}/{} are any's\n".format(
                 len(state.order_list), len([order == "any" for order in state.order_list])
             )
@@ -941,8 +1006,8 @@ class OvercookedGridworld(object):
         assert type(debug) is bool
         base_map_features = ["pot_loc", "counter_loc", "onion_disp_loc", "dish_disp_loc", "serve_loc"]
         variable_map_features = ["onions_in_pot", "onions_cook_time", "onion_soup_loc", "dishes", "onions"]
-        
-        all_objects = list(overcooked_state.objects.values())
+
+        all_objects = overcooked_state.all_objects_list
 
         def make_layer(position, value):
                 layer = np.zeros(self.shape)
@@ -980,9 +1045,6 @@ class OvercookedGridworld(object):
                 player_orientation_idx = Direction.DIRECTION_TO_INDEX[player.orientation]
                 state_mask_dict["player_{}_loc".format(i)] = make_layer(player.position, 1)
                 state_mask_dict["player_{}_orientation_{}".format(i, player_orientation_idx)] = make_layer(player.position, 1)
-                obj = player.held_object
-                if obj is not None:
-                    all_objects.append(obj)
 
             # OBJECT & STATE LAYERS
             for obj in all_objects:
@@ -1022,17 +1084,25 @@ class OvercookedGridworld(object):
             return np.array(state_mask_stack).astype(int)
 
         # NOTE: Currently not very efficient, a decent amount of computation repeated here
-        final_obs_p0 = process_for_player(0)
-        final_obs_p1 = process_for_player(1)
-        return final_obs_p0, final_obs_p1
+        num_players = len(overcooked_state.players)
+        final_obs_for_players = tuple(process_for_player(i) for i in range(num_players))
+        return final_obs_for_players
 
     def featurize_state(self, overcooked_state, mlp):
-        """Encode state with some manually designed features."""
+        """
+        Encode state with some manually designed features.
+        NOTE: currently works for just two players.
+        """
 
         all_features = {}
 
+        def make_closest_feature(idx, name, locations):
+            "Compute (x, y) deltas to closest feature of type `name`, and save it in the features dict"
+            all_features["p{}_closest_{}".format(idx, name)] = self.get_deltas_to_closest_location(player, locations,
+                                                                                                   mlp)
+
         IDX_TO_OBJ = ["onion", "soup", "dish"]
-        OBJ_TO_IDX = { o_name:idx for idx, o_name in enumerate(IDX_TO_OBJ) }
+        OBJ_TO_IDX = {o_name: idx for idx, o_name in enumerate(IDX_TO_OBJ)}
 
         counter_objects = self.get_counter_objects_dict(overcooked_state)
         pot_state = self.get_pot_states(overcooked_state)
@@ -1042,7 +1112,7 @@ class OvercookedGridworld(object):
             orientation_idx = Direction.DIRECTION_TO_INDEX[player.orientation]
             all_features["p{}_orientation".format(i)] = np.eye(4)[orientation_idx]
             obj = player.held_object
-            
+
             if obj is None:
                 held_obj_name = "none"
                 all_features["p{}_objs".format(i)] = np.zeros(len(IDX_TO_OBJ))
@@ -1055,50 +1125,42 @@ class OvercookedGridworld(object):
             if held_obj_name == "onion":
                 all_features["p{}_closest_onion".format(i)] = (0, 0)
             else:
-                onion_locations = self.get_onion_dispenser_locations() + counter_objects["onion"]
-                all_features["p{}_closest_onion".format(i)] = self.get_deltas_to_closest_location(player, onion_locations, mlp)
+                make_closest_feature(i, "onion", self.get_onion_dispenser_locations() + counter_objects["onion"])
 
-            empty_pot_locations = pot_state["empty"]
-            all_features["p{}_closest_empty_pot".format(i)] = self.get_deltas_to_closest_location(player, empty_pot_locations, mlp)
-            one_onion_pot_locations = pot_state["onion"]["one_onion"]
-            all_features["p{}_closest_one_onion_pot".format(i)] = self.get_deltas_to_closest_location(player, one_onion_pot_locations, mlp)
-            two_onion_pot_locations = pot_state["onion"]["two_onion"]
-            all_features["p{}_closest_two_onion_pot".format(i)] = self.get_deltas_to_closest_location(player, two_onion_pot_locations, mlp)
-            cooking_pot_locations = pot_state["onion"]["cooking"]
-            all_features["p{}_closest_cooking_pot".format(i)] = self.get_deltas_to_closest_location(player, cooking_pot_locations, mlp)
-            ready_pot_locations = pot_state["onion"]["ready"]
-            all_features["p{}_closest_ready_pot".format(i)] = self.get_deltas_to_closest_location(player, ready_pot_locations, mlp)
-            
+            make_closest_feature(i, "empty_pot", pot_state["empty"])
+            make_closest_feature(i, "one_onion_pot", pot_state["onion"]["one_onion"])
+            make_closest_feature(i, "two_onion_pot", pot_state["onion"]["two_onion"])
+            make_closest_feature(i, "cooking_pot", pot_state["onion"]["cooking"])
+            make_closest_feature(i, "ready_pot", pot_state["onion"]["ready"])
+
             if held_obj_name == "dish":
                 all_features["p{}_closest_dish".format(i)] = (0, 0)
             else:
-                dish_locations = self.get_dish_dispenser_locations() + counter_objects["dish"]
-                all_features["p{}_closest_dish".format(i)] = self.get_deltas_to_closest_location(player, dish_locations, mlp)
+                make_closest_feature(i, "dish", self.get_dish_dispenser_locations() + counter_objects["dish"])
 
             if held_obj_name == "soup":
                 all_features["p{}_closest_soup".format(i)] = (0, 0)
             else:
-                soup_locations = counter_objects["soup"]
-                all_features["p{}_closest_soup".format(i)] = self.get_deltas_to_closest_location(player, soup_locations, mlp)
-            all_features["p{}_closest_serving".format(i)] = self.get_deltas_to_closest_location(player, self.get_serving_locations(), mlp)
+                make_closest_feature(i, "soup", counter_objects["soup"])
+
+            make_closest_feature(i, "serving", self.get_serving_locations())
 
             for direction, pos_and_feat in enumerate(self.get_adjacent_features(player)):
                 adj_pos, feat = pos_and_feat
 
                 if direction == player.orientation:
                     # Check if counter we are facing is empty
-                    if feat == 'X' and adj_pos not in overcooked_state.objects.keys():
-                        all_features["p{}_facing_empty_counter".format(i)] = [1]
-                    else:
-                        all_features["p{}_facing_empty_counter".format(i)] = [0]
+                    facing_counter = (feat == 'X' and adj_pos not in overcooked_state.objects.keys())
+                    facing_counter_feature = [1] if facing_counter else [0]
+                    all_features["p{}_facing_empty_counter".format(i)] = facing_counter_feature
 
                 all_features["p{}_wall_{}".format(i, direction)] = [0] if feat == ' ' else [1]
 
-        features_np = { k:np.array(v) for k, v in all_features.items() }
-        
+        features_np = {k: np.array(v) for k, v in all_features.items()}
+
         p0, p1 = overcooked_state.players
-        p0_dict = { k:v for k,v in features_np.items() if k[:2] == "p0" }
-        p1_dict = { k:v for k,v in features_np.items() if k[:2] == "p1" }
+        p0_dict = {k: v for k, v in features_np.items() if k[:2] == "p0"}
+        p1_dict = {k: v for k, v in features_np.items() if k[:2] == "p1"}
         p0_features = np.concatenate(list(p0_dict.values()))
         p1_features = np.concatenate(list(p1_dict.values()))
 
@@ -1110,6 +1172,7 @@ class OvercookedGridworld(object):
         abs_pos_p1 = np.array(p0.position)
         ordered_features_p1 = np.squeeze(np.concatenate([p1_features, p0_features, p0_rel_to_p1, abs_pos_p1]))
         return ordered_features_p0, ordered_features_p1
+
 
     def get_deltas_to_closest_location(self, player, locations, mlp):
         _, closest_loc = mlp.mp.min_cost_to_feature(player.pos_and_or, locations, with_argmin=True)

@@ -3,7 +3,7 @@ import time
 import unittest
 import numpy as np
 
-from overcooked_ai_py.agents.agent import Agent, AgentPair, FixedPlanAgent, CoupledPlanningAgent, StayAgent, RandomAgent, GreedyHumanModel
+from overcooked_ai_py.agents.agent import AgentPair, FixedPlanAgent, CoupledPlanningAgent, GreedyHumanModel, CoupledPlanningPair, EmbeddedPlanningAgent, RandomAgent
 from overcooked_ai_py.mdp.actions import Direction, Action
 from overcooked_ai_py.mdp.overcooked_mdp import OvercookedGridworld, OvercookedState, PlayerState, ObjectState
 from overcooked_ai_py.mdp.overcooked_env import OvercookedEnv
@@ -20,24 +20,55 @@ P, Obj = PlayerState, ObjectState
 force_compute_large = False
 force_compute = True
 DISPLAY = True
+simple_mdp = OvercookedGridworld.from_layout_name('cramped_room', start_order_list=['any'], cook_time=5)
 large_mdp = OvercookedGridworld.from_layout_name('corridor', start_order_list=['any'], cook_time=5)
 
+
+class TestAgentEvaluator(unittest.TestCase):
+
+    def setUp(self):
+        self.agent_eval = AgentEvaluator({"layout_name": "cramped_room"}, {"horizon": 100})
+        
+    def test_human_model_pair(self):
+        trajs = self.agent_eval.evaluate_human_model_pair()
+        try:
+            AgentEvaluator.check_trajectories(trajs)
+        except AssertionError as e:
+            self.fail("Trajectories were not returned in standard format:\n{}".format(e))
+
+    def test_rollouts(self):
+        ap = AgentPair(RandomAgent(), RandomAgent())
+        trajs = self.agent_eval.evaluate_agent_pair(ap, num_games=5)
+        try:
+            AgentEvaluator.check_trajectories(trajs)
+        except AssertionError as e:
+            self.fail("Trajectories were not returned in standard format:\n{}".format(e))
+        
+    def test_mlp_computation(self):
+        try:
+            self.agent_eval.mlp
+        except Exception as e:
+            self.fail("Failed to compute MediumLevelPlanner:\n{}".format(e))
+
+
 class TestAgents(unittest.TestCase):
+
+    def setUp(self):
+        self.mlp_large = MediumLevelPlanner.from_pickle_or_compute(large_mdp, NO_COUNTERS_PARAMS, force_compute=force_compute_large)
 
     def test_fixed_plan_agents(self):
         a0 = FixedPlanAgent([s, e, n, w])
         a1 = FixedPlanAgent([s, w, n, e])
         agent_pair = AgentPair(a0, a1)
-        env = OvercookedEnv(large_mdp)
+        env = OvercookedEnv(large_mdp, horizon=10)
         trajectory, time_taken, _, _ = env.run_agents(agent_pair, include_final_state=True, display=DISPLAY)
         end_state = trajectory[-1][0]
-        self.assertEqual(time_taken, 4)
+        self.assertEqual(time_taken, 10)
         self.assertEqual(env.mdp.get_standard_start_state().player_positions, end_state.player_positions)
 
     def test_two_coupled_agents(self):
-        mlp_large = MediumLevelPlanner.from_pickle_or_compute(large_mdp, NO_COUNTERS_PARAMS, force_compute=force_compute_large)
-        a0 = CoupledPlanningAgent(mlp_large)
-        a1 = CoupledPlanningAgent(mlp_large)
+        a0 = CoupledPlanningAgent(self.mlp_large)
+        a1 = CoupledPlanningAgent(self.mlp_large)
         agent_pair = AgentPair(a0, a1)
         start_state = OvercookedState(
             [P((2, 2), n),
@@ -47,23 +78,34 @@ class TestAgents(unittest.TestCase):
         trajectory, time_taken, _, _ = env.run_agents(agent_pair, include_final_state=True, display=DISPLAY)
         end_state = trajectory[-1][0]
         self.assertEqual(end_state.order_list, [])
+
+    def test_two_coupled_agents_coupled_pair(self):
+        mlp_simple = MediumLevelPlanner.from_pickle_or_compute(simple_mdp, NO_COUNTERS_PARAMS, force_compute=force_compute)
+        cp_agent = CoupledPlanningAgent(mlp_simple)
+        agent_pair = CoupledPlanningPair(cp_agent)
+        start_state = OvercookedState(
+            [P((2, 2), n),
+             P((2, 1), n)],
+            {}, order_list=['any'])
+        env = OvercookedEnv(simple_mdp, start_state_fn=lambda: start_state)
+        trajectory, time_taken, _, _ = env.run_agents(agent_pair, include_final_state=True, display=DISPLAY)
+        end_state = trajectory[-1][0]
+        self.assertEqual(end_state.order_list, [])
     
     def test_one_coupled_one_fixed(self):
-        mlp_large = MediumLevelPlanner.from_pickle_or_compute(large_mdp, NO_COUNTERS_PARAMS, force_compute=force_compute_large)
-        a0 = CoupledPlanningAgent(mlp_large)
+        a0 = CoupledPlanningAgent(self.mlp_large)
         a1 = FixedPlanAgent([s, e, n, w])
         agent_pair = AgentPair(a0, a1)
-        env = OvercookedEnv(large_mdp)
+        env = OvercookedEnv(large_mdp, horizon=10)
         trajectory, time_taken, _, _ = env.run_agents(agent_pair, include_final_state=True, display=DISPLAY)
-        self.assertEqual(time_taken, 4)
+        self.assertEqual(time_taken, 10)
 
     def test_one_coupled_one_greedy_human(self):
         # Even though in the first ~10 timesteps it seems like agent 1 is wasting time
         # it turns out that this is actually not suboptimal as the true bottleneck is 
         # going to be agent 0 later on (when it goes to get the 3rd onion)
-        mlp_large = MediumLevelPlanner.from_pickle_or_compute(large_mdp, NO_COUNTERS_PARAMS, force_compute=force_compute_large)
-        a0 = GreedyHumanModel(mlp_large)
-        a1 = CoupledPlanningAgent(mlp_large)
+        a0 = GreedyHumanModel(self.mlp_large)
+        a1 = CoupledPlanningAgent(self.mlp_large)
         agent_pair = AgentPair(a0, a1)
         start_state = OvercookedState(
             [P((2, 1), s),
@@ -89,12 +131,14 @@ class TestAgents(unittest.TestCase):
         end_state = trajectory[-1][0]
         self.assertEqual(len(end_state.order_list), 0)
 
+    def test_embedded_planning_agent(self):
+        agent_evaluator = AgentEvaluator({"layout_name": "cramped_room"}, {"horizon": 100})
+        other_agent = GreedyHumanModel(agent_evaluator.mlp)
+        epa = EmbeddedPlanningAgent(other_agent, agent_evaluator.mlp, agent_evaluator.env, delivery_horizon=1)
+        ap = AgentPair(epa, other_agent)
+        agent_evaluator.evaluate_agent_pair(ap, num_games=1, display=True)
 
-class TestAgentEvaluator(unittest.TestCase):
-    pass
 
-
-# TODO: could reformat all of these tests to use AgentEvaluator
 class TestScenarios(unittest.TestCase):
 
     """
@@ -111,10 +155,6 @@ class TestScenarios(unittest.TestCase):
         print("\n"*5, "\n" , "-"*50)
         trajectory_rr = evaluator.evaluate_optimal_pair(display=DISPLAY)
         time_taken_rr = trajectory_rr["ep_lengths"][0]
-        
-        # evaluator.dump_action_trajectory_as_json(trajectory_hr, "../../overcooked-js/unident_s_2_hr")
-        # evaluator.dump_action_trajectory_as_json(trajectory_rr, "../../overcooked-js/unident_s_2_rr")
-        # print("saved!")
 
         print("H+R time taken: ", time_taken_hr)
         print("R+R time taken: ", time_taken_rr)
@@ -122,7 +162,7 @@ class TestScenarios(unittest.TestCase):
         self.assertGreater(time_taken_hr, time_taken_rr)
 
     def test_scenario_1(self):
-        # ≈ Scenario 1 on the Google Doc
+        # Myopic corridor collision
         #
         # X X X X X O X D X X X X X
         # X   ↓Ho     X           X
@@ -148,8 +188,8 @@ class TestScenarios(unittest.TestCase):
         env.run_agents(agent_pair, include_final_state=True, display=DISPLAY)
 
     def test_scenario_1_s(self):
-        # ≈ Scenario 1 on the Google Doc
-        #
+        # Smaller version of the corridor collisions scenario above
+        # to facilitate DRL training
         scenario_1_mdp = OvercookedGridworld.from_layout_name('scenario1_s', start_order_list=['any'], cook_time=5)
         mlp = MediumLevelPlanner.from_pickle_or_compute(scenario_1_mdp, NO_COUNTERS_PARAMS, force_compute=force_compute)
         a0 = GreedyHumanModel(mlp)
@@ -161,6 +201,7 @@ class TestScenarios(unittest.TestCase):
             {}, order_list=['onion'])
         env = OvercookedEnv(scenario_1_mdp, start_state_fn=lambda: start_state)
         trajectory, time_taken_hr, _, _ = env.run_agents(agent_pair, include_final_state=True, display=DISPLAY)
+        env.reset()
 
         print("\n"*5)
         print("-"*50)
@@ -168,14 +209,14 @@ class TestScenarios(unittest.TestCase):
         a0 = CoupledPlanningAgent(mlp)
         a1 = CoupledPlanningAgent(mlp)
         agent_pair = AgentPair(a0, a1)
-        env.reset()
         trajectory, time_taken_rr, _, _ = env.run_agents(agent_pair, include_final_state=True, display=DISPLAY)
 
         print("H+R time taken: ", time_taken_hr)
         print("R+R time taken: ", time_taken_rr)
+        self.assertGreater(time_taken_hr, time_taken_rr)
 
     def test_scenario_2(self):
-        # Based off of scenario 2 on the Google Doc
+        # Simple asymmetric advantages scenario
         #
         # X X X X X O X X X X
         # S                 O
@@ -204,7 +245,7 @@ class TestScenarios(unittest.TestCase):
         self.compare_times(eva)
 
     def test_scenario_3(self):
-        # Based off of scenario 2 on the Google Doc
+        # Another asymmetric advantage scenario
         #
         # X X X X X O X X X X
         # S           X X P=X
@@ -220,7 +261,8 @@ class TestScenarios(unittest.TestCase):
         # However, H goes to get the onion, and so does R initially, as it
         # assumes H will go and get the dish. Once H has picked up the onion,
         # R realizes that it should go and get the dish itself. This leads to
-        # less time wasted compared to the R-R case
+        # more time wasted compared to the R-R case
+
         mdp_params = {"layout_name": "scenario3", "cook_time": 5}
         mdp = OvercookedGridworld.from_layout_name(**mdp_params)
         start_state = mdp.get_standard_start_state()
@@ -238,15 +280,12 @@ class TestScenarios(unittest.TestCase):
         }
 
         env_params = {"start_state_fn": lambda: start_state, "horizon": 1000}
-        eva = AgentEvaluator(mdp_params, env_params, mlp_params=one_counter_params)
+        eva = AgentEvaluator(mdp_params, env_params, mlp_params=one_counter_params, force_compute=force_compute)
 
         self.compare_times(eva)
 
-        # actions = [traj_item[1] for traj_item in trajectory]
-        # save_as_json("suboptimalities/scenario_3_Opt.json", actions)
-
     def test_scenario_4(self):
-        # Based off of scenario 2 on the Google Doc
+        # Yet another asymmetric advantage scenario
         #
         # X X X X X O X X X X
         # S             X P=X
@@ -293,7 +332,7 @@ class TestScenarios(unittest.TestCase):
         self.compare_times(eva, h_idx=1)
     
     def test_unidentifiable(self):
-        # Human plan unidentifiable
+        # Scenario with unidentifiable human plan (and asymmetric advantages)
         #
         # X O X X X
         # X     ↓RX
@@ -323,9 +362,9 @@ class TestScenarios(unittest.TestCase):
         self.compare_times(eva, h_idx=0)
 
     def test_unidentifiable_s(self):
-        # Human plan unidentifiable, with smaller map
+        # Same as above, but smaller layout to facilitate DRL training
 
-        eva = AgentEvaluator({"layout_name": "unident_s", "start_order_list": ["any", "any"], "cook_time": 5}, force_compute=force_compute)
+        eva = AgentEvaluator({"layout_name": "asymmetric_advantages", "start_order_list": ["any", "any"], "cook_time": 5}, force_compute=force_compute)
         start_state = eva.env.mdp.get_standard_start_state()
         start_state.objects = {(4, 2): Obj('soup', (4, 2), ('onion', 2, 0)),
                                (4, 3): Obj('soup', (4, 3), ('onion', 3, 5))}

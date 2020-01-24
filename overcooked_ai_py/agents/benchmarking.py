@@ -1,24 +1,43 @@
-import os
-import json
-import tqdm
+import json, copy
 import numpy as np
-from argparse import ArgumentParser
 
-from overcooked_ai_py.utils import save_pickle, load_pickle, cumulative_rewards_from_rew_list, save_as_json, load_from_json
-from overcooked_ai_py.planning.planners import NO_COUNTERS_PARAMS, MediumLevelPlanner, NO_COUNTERS_START_OR_PARAMS
+from overcooked_ai_py.utils import save_pickle, load_pickle, cumulative_rewards_from_rew_list, save_as_json, load_from_json, mean_and_std_err
+from overcooked_ai_py.planning.planners import NO_COUNTERS_PARAMS, MediumLevelPlanner
 from overcooked_ai_py.mdp.layout_generator import LayoutGenerator
 from overcooked_ai_py.agents.agent import AgentPair, CoupledPlanningAgent, RandomAgent, GreedyHumanModel
-from overcooked_ai_py.mdp.overcooked_mdp import OvercookedGridworld, Action, NO_REW_SHAPING_PARAMS
+from overcooked_ai_py.mdp.overcooked_mdp import OvercookedGridworld, Action, OvercookedState
 from overcooked_ai_py.mdp.overcooked_env import OvercookedEnv
 
-# TODO: Clean all unnecessary imports
+
+DEFAULT_TRAJ_KEYS = [
+    "ep_observations",
+    "ep_actions",
+    "ep_rewards",
+    "ep_dones",
+    "ep_infos",
+    "ep_returns",
+    "ep_lengths",
+    "mdp_params",
+    "env_params",
+    "metadatas"
+]
+
 
 class AgentEvaluator(object):
     """
     Class used to get rollouts and evaluate performance of various types of agents.
     """
 
-    def __init__(self, mdp_params, env_params={}, mdp_fn_params=None, force_compute=False, mlp_params=None, debug=False):
+    def __init__(self, mdp_params, env_params={}, mdp_fn_params=None, force_compute=False, mlp_params=NO_COUNTERS_PARAMS, debug=False):
+        """
+        mdp_params (dict): params for creation of an OvercookedGridworld instance through the `from_layout_name` method
+        env_params (dict): params for creation of an OvercookedEnv
+        mdp_fn_params (dict): params to setup random MDP generation
+        force_compute (bool): whether should re-compute MediumLevelPlanner although matching file is found
+        mlp_params (dict): params for MediumLevelPlanner
+        """
+        assert type(mdp_params) is dict, "mdp_params must be a dictionary"
+
         if mdp_fn_params is None:
             self.variable_mdp = False
             self.mdp_fn = lambda: OvercookedGridworld.from_layout_name(**mdp_params)
@@ -35,17 +54,20 @@ class AgentEvaluator(object):
     @property
     def mlp(self):
         assert not self.variable_mdp, "Variable mdp is not currently supported for planning"
-        if self._mlp is None:
-            mlp_params = self.mlp_params if self.mlp_params is not None else NO_COUNTERS_PARAMS
+        if self._mlp is None: 
             if self.debug: print("Computing Planner")
-            self._mlp = MediumLevelPlanner.from_pickle_or_compute(self.env.mdp, mlp_params, force_compute=self.force_compute)
+            self._mlp = MediumLevelPlanner.from_pickle_or_compute(self.env.mdp, self.mlp_params, force_compute=self.force_compute)
         return self._mlp
 
-    def evaluate_human_model_pair(self, display=True):
+    def evaluate_random_pair(self, interact=True, display=False):
+        agent_pair = AgentPair(RandomAgent(interact=interact), RandomAgent(interact=interact))
+        return self.evaluate_agent_pair(agent_pair, display=display)
+
+    def evaluate_human_model_pair(self, display=True, num_games=1):
         a0 = GreedyHumanModel(self.mlp)
         a1 = GreedyHumanModel(self.mlp)
         agent_pair = AgentPair(a0, a1)
-        return self.evaluate_agent_pair(agent_pair, display=display)
+        return self.evaluate_agent_pair(agent_pair, display=display, num_games=num_games)
 
     def evaluate_optimal_pair(self, display=True, delivery_horizon=2):
         a0 = CoupledPlanningAgent(self.mlp, delivery_horizon=delivery_horizon)
@@ -62,46 +84,69 @@ class AgentEvaluator(object):
         return self.evaluate_agent_pair(agent_pair, display=display)
 
     def evaluate_one_optimal_one_greedy_human(self, h_idx=0, display=True):
-        h, r = GreedyHumanModel, CoupledPlanningAgent
-        if h_idx == 0:
-            a0, a1 = h(self.mlp), r(self.mlp)
-        elif h_idx == 1:
-            a0, a1 = r(self.mlp), h(self.mlp)
-        agent_pair = AgentPair(a0, a1)
+        h = GreedyHumanModel(self.mlp)
+        r = CoupledPlanningAgent(self.mlp)
+        agent_pair = AgentPair(h, r) if h_idx == 0 else AgentPair(r, h)
         return self.evaluate_agent_pair(agent_pair, display=display)
 
-    def evaluate_agent_pair(self, agent_pair, num_games=1, display=False):
-        return self.env.get_rollouts(agent_pair, num_games, display=display)
+    def evaluate_agent_pair(self, agent_pair, num_games=1, display=False, info=True):
+        self.env.reset()
+        return self.env.get_rollouts(agent_pair, num_games, display=display, info=info)
+
+    def get_agent_pair_trajs(self, a0, a1=None, num_games=100, display=False):
+        """Evaluate agent pair on both indices, and return trajectories by index"""
+        if a1 is None:
+            ap = AgentPair(a0, a0, allow_duplicate_agents=True)
+            trajs_0 = trajs_1 = self.evaluate_agent_pair(ap, num_games=num_games, display=display)
+        else:
+            trajs_0 = self.evaluate_agent_pair(AgentPair(a0, a1), num_games=num_games, display=display)
+            trajs_1 = self.evaluate_agent_pair(AgentPair(a1, a0), num_games=num_games, display=display)
+        return trajs_0, trajs_1
 
     @staticmethod
-    def cumulative_rewards_from_trajectory(trajectory):
-        cumulative_rew = 0
-        for trajectory_item in trajectory:
-            r_t = trajectory_item[2]
-            cumulative_rew += r_t
-        return cumulative_rew
-
-    def check_trajectories(self, trajectories):
-        """Checks consistency of trajectories in standard format with dynamics of mdp."""
-        for i in range(len(trajectories["ep_observations"])):
-            self.check_trajectory(trajectories, i)
-
-    def check_trajectory(self, trajectories, idx):
+    def check_trajectories(trajectories):
         """
-        Check consistency of trajectory with idx `idx` with mdp dynamics.
-        NOTE: does not check dones positions, lengths consistency, order lists reducing if not None
+        Checks that of trajectories are in standard format and are consistent with dynamics of mdp.
         """
-        states, actions, rewards = trajectories["ep_observations"][idx], trajectories["ep_actions"][idx], trajectories["ep_rewards"][idx]
+        AgentEvaluator._check_standard_traj_keys(set(trajectories.keys()))
+        AgentEvaluator._check_right_types(trajectories)
+        AgentEvaluator._check_trajectories_dynamics(trajectories)
+        # TODO: Check shapes?
 
-        assert len(states) == len(actions)
+    @staticmethod
+    def _check_standard_traj_keys(traj_keys_set):
+        assert traj_keys_set == set(DEFAULT_TRAJ_KEYS), "Keys of traj dict did not match standard form.\nMissing keys: {}\nAdditional keys: {}".format(
+            [k for k in DEFAULT_TRAJ_KEYS if k not in traj_keys_set], [k for k in traj_keys_set if k not in DEFAULT_TRAJ_KEYS]
+        )
+    
+    @staticmethod
+    def _check_right_types(trajectories):
+        for idx in range(len(trajectories["ep_observations"])):
+            states, actions, rewards = trajectories["ep_observations"][idx], trajectories["ep_actions"][idx], trajectories["ep_rewards"][idx]
+            mdp_params, env_params = trajectories["mdp_params"][idx], trajectories["env_params"][idx]
+            assert all(type(j_a) is tuple for j_a in actions)
+            assert all(type(s) is OvercookedState for s in states)
+            assert type(mdp_params) is dict
+            assert type(env_params) is dict
+            # TODO: check that are all lists
 
-        # Checking that actions would give rise to same behaviour in current MDP
-        simulation_env = self.env.copy()
-        for i in range(len(states)):
-            curr_state = states[i]
-            simulation_env.state = curr_state
+    @staticmethod
+    def _check_trajectories_dynamics(trajectories):
+        _, envs = AgentEvaluator.mdps_and_envs_from_trajectories(trajectories)
 
-            if i + 1 < len(states):
+        for idx in range(len(trajectories["ep_observations"])):
+            states, actions, rewards = trajectories["ep_observations"][idx], trajectories["ep_actions"][idx], trajectories["ep_rewards"][idx]
+            simulation_env = envs[idx]
+
+            assert len(states) == len(actions) == len(rewards), "# states {}\t# actions {}\t# rewards {}".format(
+                len(states), len(actions), len(rewards)
+            )
+
+            # Checking that actions would give rise to same behaviour in current MDP
+            for i in range(len(states) - 1):
+                curr_state = states[i]
+                simulation_env.state = curr_state
+
                 next_state, reward, done, info = simulation_env.step(actions[i])
 
                 assert states[i + 1] == next_state, "States differed (expected vs actual): {}".format(
@@ -109,20 +154,29 @@ class AgentEvaluator(object):
                 )
                 assert rewards[i] == reward, "{} \t {}".format(rewards[i], reward)
 
+    @staticmethod
+    def mdps_and_envs_from_trajectories(trajectories):
+        mdps, envs = [], []
+        for idx in range(len(trajectories["ep_lengths"])):
+            mdp_params, env_params = trajectories["mdp_params"][idx], trajectories["env_params"][idx]
+            mdp = OvercookedGridworld.from_layout_name(**mdp_params)
+            env = OvercookedEnv(mdp, **env_params)
+            mdps.append(mdp)
+            envs.append(env)
+        return mdps, envs
+
 
     ### I/O METHODS ###
 
-    def save_trajectory(self, trajectory, filename):
-        trajectory_dict_standard_signature = [
-            "ep_actions", "ep_observations", "ep_rewards", "ep_dones", "ep_returns", "ep_lengths"
-        ]
-        assert set(trajectory.keys()) == set(trajectory_dict_standard_signature)
-        self.check_trajectories(trajectory)
+    @staticmethod
+    def save_trajectory(trajectory, filename):
+        AgentEvaluator.check_trajectories(trajectory)
         save_pickle(trajectory, filename)
 
-    def load_trajectory(self, filename):
+    @staticmethod
+    def load_trajectory(filename):
         traj = load_pickle(filename)
-        self.check_trajectories(traj)
+        AgentEvaluator.check_trajectories(traj)
         return traj
 
     @staticmethod
@@ -144,24 +198,37 @@ class AgentEvaluator(object):
         np.savez(filename, **stable_baselines_trajs_dict)
 
     @staticmethod
-    def save_traj_as_json(trajectory, filename, idx=0):
+    def save_traj_as_json(trajectory, filename):
         """Saves the `idx`th trajectory as a list of state action pairs"""
-        ep_actions = trajectory["ep_actions"][idx]
-        ep_observation = trajectory["ep_observations"][idx]
-        assert len(ep_actions) == len(ep_observation)
-        traj_dict = {
-            "state_action_traj": [],
-            "layout_name": trajectory["layout_name"]
-        }
-        for act, ob in zip(ep_actions, ep_observation):
-            traj_dict["state_action_traj"].append((act, ob.to_dict()))
-        
-        save_as_json(filename, traj_dict)
+        assert set(DEFAULT_TRAJ_KEYS) == set(trajectory.keys()), "{} vs\n{}".format(DEFAULT_TRAJ_KEYS, trajectory.keys())
+        AgentEvaluator.check_trajectories(trajectory)
+        trajectory = AgentEvaluator.make_trajectories_json_serializable(trajectory)
+        save_as_json(trajectory, filename)
+
+    @staticmethod
+    def make_trajectories_json_serializable(trajectories):
+        """
+        Cannot convert np.arrays or special types of ints to JSON.
+        This method converts all components of a trajectory to standard types.
+        """
+        dict_traj = copy.deepcopy(trajectories)
+        dict_traj["ep_observations"] = [[ob.to_dict() for ob in one_ep_obs] for one_ep_obs in trajectories["ep_observations"]]
+        for k in dict_traj.keys():
+            dict_traj[k] = list(dict_traj[k])
+        dict_traj['ep_actions'] = [list(lst) for lst in dict_traj['ep_actions']]
+        dict_traj['ep_rewards'] = [list(lst) for lst in dict_traj['ep_rewards']]
+        dict_traj['ep_dones'] = [int(lst) for lst in dict_traj['ep_dones']]
+        dict_traj['ep_returns'] = [int(val) for val in dict_traj['ep_returns']]
+        dict_traj['ep_lengths'] = [int(val) for val in dict_traj['ep_lengths']]
+        return dict_traj
 
     @staticmethod
     def load_traj_from_json(filename):
         traj_dict = load_from_json(filename)
-        print(traj_dict)
+        traj_dict["ep_observations"] = [[OvercookedState.from_dict(ob) for ob in curr_ep_obs] for curr_ep_obs in traj_dict["ep_observations"]]
+        traj_dict["ep_actions"] = [[tuple(tuple(a) if type(a) is list else a for a in j_a) for j_a in ep_acts] for ep_acts in traj_dict["ep_actions"]]
+        return traj_dict
+
 
     ### VIZUALIZATION METHODS ###
 
@@ -176,14 +243,16 @@ class AgentEvaluator(object):
         states = trajectories["ep_observations"][traj_idx]
         joint_actions = trajectories["ep_actions"][traj_idx]
         cumulative_rewards = cumulative_rewards_from_rew_list(trajectories["ep_rewards"][traj_idx])
-        layout_name = trajectories["layout_name"]
-        env = AgentEvaluator(layout_name).env
+        mdp_params = trajectories["mdp_params"][traj_idx]
+        env_params = trajectories["env_params"][traj_idx]
+        env = AgentEvaluator(mdp_params, env_params=env_params).env
 
         def update(t = 1.0):
             env.state = states[int(t)]
+            joint_action = joint_actions[int(t - 1)] if t > 0 else (Action.STAY, Action.STAY)
             print(env)
-            joint_action = joint_actions[int(t)]
             print("Joint Action: {} \t Score: {}".format(Action.joint_action_to_char(joint_action), cumulative_rewards[t]))
+            
             
         t = widgets.IntSlider(min=0, max=len(states) - 1, step=1, value=0)
         out = interactive_output(update, {'t': t})

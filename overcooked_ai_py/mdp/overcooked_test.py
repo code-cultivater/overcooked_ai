@@ -5,10 +5,21 @@ from overcooked_ai_py.mdp.actions import Action, Direction
 from overcooked_ai_py.mdp.overcooked_mdp import PlayerState, OvercookedGridworld, OvercookedState, ObjectState
 from overcooked_ai_py.mdp.overcooked_env import OvercookedEnv, DEFAULT_ENV_PARAMS
 from overcooked_ai_py.mdp.layout_generator import LayoutGenerator
+from overcooked_ai_py.agents.agent import AgentGroup, AgentPair, GreedyHumanModel, FixedPlanAgent
+from overcooked_ai_py.agents.benchmarking import AgentEvaluator
+from overcooked_ai_py.planning.planners import MediumLevelPlanner, NO_COUNTERS_PARAMS
+from overcooked_ai_py.utils import save_pickle, load_pickle, iterate_over_files_in_dir
+
 
 START_ORDER_LIST = ["any"]
+n, s = Direction.NORTH, Direction.SOUTH
+e, w = Direction.EAST, Direction.WEST
+stay, interact = Action.STAY, Action.INTERACT
+P, Obj = PlayerState, ObjectState
+
 
 class TestDirection(unittest.TestCase):
+
     def test_direction_number_conversion(self):
         all_directions = Direction.ALL_DIRECTIONS
         all_numbers = []
@@ -27,6 +38,9 @@ class TestDirection(unittest.TestCase):
         self.assertEqual(set(all_numbers), set(range(num_directions)))
 
 class TestGridworld(unittest.TestCase):
+
+    # TODO: write more smaller targeted tests to be loaded from jsons
+
     def setUp(self):
         self.base_mdp = OvercookedGridworld.from_layout_name(
             "mdp_test",
@@ -51,20 +65,6 @@ class TestGridworld(unittest.TestCase):
                                                  'O  2XX',
                                                  'X1 3 X',
                                                  'XDXSXX'])
-
-        with self.assertRaises(AssertionError):
-            # There can't be more than two agents
-            mdp = OvercookedGridworld.from_grid(['XXPXX',
-                                                 'O  2O',
-                                                 'X1 3X',
-                                                 'XDXSX'])
-
-        with self.assertRaises(AssertionError):
-            # There can't be fewer than two agents.
-            mdp = OvercookedGridworld.from_grid(['XXPXX',
-                                                 'O   O',
-                                                 'X1  X',
-                                                 'XDXSX'])
 
         with self.assertRaises(AssertionError):
             # The agents must be numbered 1 and 2.
@@ -110,23 +110,18 @@ class TestGridworld(unittest.TestCase):
                          [Action.ALL_ACTIONS, Action.ALL_ACTIONS])
 
     def test_transitions_and_environment(self):
-        n, s = Direction.NORTH, Direction.SOUTH
-        e, w = Direction.EAST, Direction.WEST
-        stay, interact = Action.STAY, Action.INTERACT
-        P, Obj = PlayerState, ObjectState
-
         bad_state = OvercookedState(
             [P((0, 0), s), P((3, 1), s)], {}, order_list=[])
 
         with self.assertRaises(AssertionError):
-            self.base_mdp.get_transition_states_and_probs(bad_state, stay)
+            self.base_mdp.get_state_transition(bad_state, stay)
 
         env = OvercookedEnv(self.base_mdp)
         env.state.order_list = ['onion', 'any']
 
         def check_transition(action, expected_state, expected_reward=0):
             state = env.state
-            pred_state, sparse_reward, dense_reward = self.base_mdp.get_transition_states_and_probs(state, action)
+            pred_state, sparse_reward, dense_reward = self.base_mdp.get_state_transition(state, action)
             self.assertEqual(pred_state, expected_state, '\n' + str(pred_state) + '\n' + str(expected_state))
             new_state, sparse_reward, _, _ = env.step(action)
             self.assertEqual(new_state, expected_state)
@@ -137,168 +132,20 @@ class TestGridworld(unittest.TestCase):
              P((3, 1), e)],
             {}, order_list=['onion', 'any']))
 
-        check_transition([w, interact], OvercookedState(
-            [P((1, 1), w),
-             P((3, 1), e, Obj('onion', (3, 1)))],
-            {}, order_list=['onion', 'any']))
+    def test_common_mdp_jsons(self):
+        traj_test_json_paths = iterate_over_files_in_dir("../common_tests/trajectory_tests/")
+        for test_json_path in traj_test_json_paths:
+            test_trajectory = AgentEvaluator.load_traj_from_json(test_json_path)
+            try:
+                AgentEvaluator.check_trajectories(test_trajectory)
+            except AssertionError as e:
+                self.fail("File {} failed with error:\n{}".format(test_json_path, e))
 
-        check_transition([interact, w],OvercookedState(
-            [P((1, 1), w, Obj('onion', (1, 1))),
-             P((2, 1), w, Obj('onion', (2, 1)))],
-            {}, order_list=['onion', 'any']))
-
-        check_transition([e, n], OvercookedState(
-            [P((1, 1), e, Obj('onion', (1, 1))),
-             P((2, 1), n, Obj('onion', (2, 1)))],
-            {}, order_list=['onion', 'any']))
-
-        check_transition([stay, interact], OvercookedState(
-            [P((1, 1), e, Obj('onion', (1, 1))),
-             P((2, 1), n)],
-            {(2, 0): Obj('soup', (2, 0), ('onion', 1, 0))},
-            order_list=['onion', 'any']))
-
-        check_transition([e, e], OvercookedState(
-            [P((2, 1), e, Obj('onion', (2, 1))),
-             P((3, 1), e)],
-            {(2, 0): Obj('soup', (2, 0), ('onion', 1, 0))},
-            order_list=['onion', 'any']))
-
-        check_transition([n, interact], OvercookedState(
-            [P((2, 1), n, Obj('onion', (2, 1))),
-             P((3, 1), e, Obj('onion', (3, 1)))],
-            {(2, 0): Obj('soup', (2, 0), ('onion', 1, 0))},
-            order_list=['onion', 'any']))
-
-        check_transition([interact, w], OvercookedState(
-            [P((2, 1), n),
-             P((3, 1), w, Obj('onion', (3, 1)))],
-            {(2, 0): Obj('soup', (2, 0), ('onion', 2, 0))},
-            order_list=['onion', 'any']))
-
-        check_transition([w, w], OvercookedState(
-            [P((1, 1), w),
-             P((2, 1), w, Obj('onion', (2, 1)))],
-            {(2, 0): Obj('soup', (2, 0), ('onion', 2, 0))},
-            order_list=['onion', 'any']))
-
-        check_transition([s, n], OvercookedState(
-            [P((1, 2), s),
-             P((2, 1), n, Obj('onion', (2, 1)))],
-            {(2, 0): Obj('soup', (2, 0), ('onion', 2, 0))},
-            order_list=['onion', 'any']))
-
-        check_transition([interact, interact], OvercookedState(
-            [P((1, 2), s, Obj('dish', (1, 2))),
-             P((2, 1), n)],
-            {(2, 0): Obj('soup', (2, 0), ('onion', 3, 1))},
-            order_list=['onion', 'any']))
-
-        check_transition([e, s], OvercookedState(
-            [P((1, 2), e, Obj('dish', (1, 2))),
-             P((2, 1), s)],
-            {(2, 0): Obj('soup', (2, 0), ('onion', 3, 2))},
-            order_list=['onion', 'any']))
-
-        check_transition([e, interact], OvercookedState(
-            [P((2, 2), e, Obj('dish', (2, 2))),
-             P((2, 1), s)],
-            {(2, 0): Obj('soup', (2, 0), ('onion', 3, 3))},
-            order_list=['onion', 'any']))
-
-        check_transition([n, e], OvercookedState(
-            [P((2, 1), n, Obj('dish', (2, 1))),
-             P((3, 1), e)],
-            {(2, 0): Obj('soup', (2, 0), ('onion', 3, 4))},
-            order_list=['onion', 'any']))
-
-        check_transition([interact, interact], OvercookedState(
-            [P((2, 1), n, Obj('dish', (2, 1))),
-             P((3, 1), e, Obj('onion', (3, 1)))],
-            {(2, 0): Obj('soup', (2, 0), ('onion', 3, 5))},
-            order_list=['onion', 'any']))
-        
-        check_transition([stay, stay], OvercookedState(
-            [P((2, 1), n, Obj('dish', (2, 1))),
-             P((3, 1), e, Obj('onion', (3, 1)))],
-            {(2, 0): Obj('soup', (2, 0), ('onion', 3, 5))},
-            order_list=['onion', 'any']))
-
-        check_transition([interact, interact], OvercookedState(
-            [P((2, 1), n, Obj('soup', (2, 1), ('onion', 3, 5))),
-             P((3, 1), e, Obj('onion', (3, 1)))],
-            {}, order_list=['onion', 'any']))
-
-        check_transition([e, w], OvercookedState(
-            [P((2, 1), e, Obj('soup', (2, 1), ('onion', 3, 5))),
-             P((3, 1), w, Obj('onion', (3, 1)))],
-            {}, order_list=['onion', 'any']))
-
-        check_transition([e, s], OvercookedState(
-            [P((3, 1), e, Obj('soup', (3, 1), ('onion', 3, 5))),
-             P((3, 2), s, Obj('onion', (3, 2)))],
-            {}, order_list=['onion', 'any']))
-
-        check_transition([s, interact], OvercookedState(
-            [P((3, 1), s, Obj('soup', (3, 1), ('onion', 3, 5))),
-             P((3, 2), s, Obj('onion', (3, 2)))],
-            {}, order_list=['onion', 'any']))
-
-        check_transition([s, w], OvercookedState(
-            [P((3, 2), s, Obj('soup', (3, 2), ('onion', 3, 5))),
-             P((2, 2), w, Obj('onion', (2, 2)))],
-            {}, order_list=['onion', 'any']))
-
-        check_transition([interact, n], OvercookedState(
-            [P((3, 2), s),
-             P((2, 1), n, Obj('onion', (2, 1)))],
-            {}, order_list=['any']), expected_reward=self.base_mdp.delivery_reward)
-
-        check_transition([e, interact], OvercookedState(
-            [P((3, 2), e),
-             P((2, 1), n)],
-            {(2, 0): Obj('soup', (2, 0), ('onion', 1, 0))}, 
-            order_list=['any']))
-
-        check_transition([interact, s], OvercookedState(
-            [P((3, 2), e, Obj('tomato', (3, 2))),
-             P((2, 2), s)],
-            {(2, 0): Obj('soup', (2, 0), ('onion', 1, 0))},
-            order_list=['any']))
-
-        check_transition([w, w], OvercookedState(
-            [P((2, 2), w, Obj('tomato', (2, 2))),
-             P((1, 2), w)],
-            {(2, 0): Obj('soup', (2, 0), ('onion', 1, 0))},
-            order_list=['any']))
-        
-        check_transition([n, interact], OvercookedState(
-            [P((2, 1), n, Obj('tomato', (2, 1))),
-             P((1, 2), w, Obj('tomato', (1, 2)))],
-            {(2, 0): Obj('soup', (2, 0), ('onion', 1, 0))},
-            order_list=['any']))
-        
-        check_transition([interact, interact], OvercookedState(
-            [P((2, 1), n, Obj('tomato', (2, 1))),
-             P((1, 2), w, Obj('tomato', (1, 2)))],
-            {(2, 0): Obj('soup', (2, 0), ('onion', 1, 0))},
-            order_list=['any']))
-
-        check_transition([s, interact], OvercookedState(
-            [P((2, 2), s, Obj('tomato', (2, 2))),
-             P((1, 2), w, Obj('tomato', (1, 2)))],
-            {(2, 0): Obj('soup', (2, 0), ('onion', 1, 0))},
-            order_list=['any']))
-        
-        check_transition([interact, interact], OvercookedState(
-            [P((2, 2), s),
-             P((1, 2), w, Obj('tomato', (1, 2)))],
-            {(2, 0): Obj('soup', (2, 0), ('onion', 1, 0)),
-             (2, 3): Obj('soup', (2, 3), ('tomato', 1, 0))}, 
-            order_list=['any']))
-
-
-from overcooked_ai_py.agents.agent import AgentPair, RandomAgent
+    def test_four_player_mdp(self):
+        try:
+            OvercookedGridworld.from_layout_name("multiplayer_schelling")
+        except AssertionError as e:
+            print("Loading > 2 player map failed with error:", e)
 
 def random_joint_action():
     num_actions = len(Action.ALL_ACTIONS)
@@ -306,21 +153,41 @@ def random_joint_action():
     return (Action.INDEX_TO_ACTION[a_idx0], Action.INDEX_TO_ACTION[a_idx1])
 
 
-class TestOvercookedEnvironment(unittest.TestCase):
-    
-    # TODO: 
+class TestFeaturizations(unittest.TestCase):
+
     def setUp(self):
-        self.base_mdp = OvercookedGridworld.from_layout_name("simple")
+        self.base_mdp = OvercookedGridworld.from_layout_name("cramped_room")
+        self.mlp = MediumLevelPlanner.from_pickle_or_compute(self.base_mdp, NO_COUNTERS_PARAMS, force_compute=True)
         self.env = OvercookedEnv(self.base_mdp, **DEFAULT_ENV_PARAMS)
-        self.rnd_agent_pair = AgentPair(RandomAgent(), RandomAgent())
+        self.rnd_agent_pair = AgentPair(GreedyHumanModel(self.mlp), GreedyHumanModel(self.mlp))
+        np.random.seed(0)
+
+    def test_lossless_state_featurization(self):
+        trajs = self.env.get_rollouts(self.rnd_agent_pair, num_games=5)
+        featurized_observations = [[self.base_mdp.lossless_state_encoding(state) for state in ep_states] for ep_states in trajs["ep_observations"]]
+        expected_featurization = load_pickle("data/testing/lossless_state_featurization")
+        self.assertTrue(np.array_equal(expected_featurization, featurized_observations))
+
+    def test_state_featurization(self):
+        trajs = self.env.get_rollouts(self.rnd_agent_pair, num_games=5)
+        featurized_observations = [[self.base_mdp.featurize_state(state, self.mlp) for state in ep_states] for ep_states in trajs["ep_observations"]]
+        expected_featurization = load_pickle("data/testing/state_featurization")
+        self.assertTrue(np.array_equal(expected_featurization, featurized_observations))
+
+
+class TestOvercookedEnvironment(unittest.TestCase):
+
+    def setUp(self):
+        self.base_mdp = OvercookedGridworld.from_layout_name("cramped_room")
+        self.env = OvercookedEnv(self.base_mdp, **DEFAULT_ENV_PARAMS)
+        self.rnd_agent_pair = AgentPair(FixedPlanAgent([stay, w, w]), FixedPlanAgent([stay, e, e]))
         np.random.seed(0)
 
     def test_constructor(self):
-        OvercookedEnv(self.base_mdp, horizon=10)
-
-        with self.assertRaises(AssertionError):
-            # Infinite horizon and unlimited orders
-            OvercookedEnv(self.base_mdp, **{"horizon": np.Inf})
+        try:
+            OvercookedEnv(self.base_mdp, horizon=10)
+        except Exception as e:
+            self.fail("Failed to instantiate OvercookedEnv:\n{}".format(e))
 
         with self.assertRaises(TypeError):
             OvercookedEnv(self.base_mdp, **{"invalid_env_param": None})
@@ -335,14 +202,45 @@ class TestOvercookedEnvironment(unittest.TestCase):
         self.env.execute_plan(self.base_mdp.get_standard_start_state(), action_plan)
 
     def test_run_agents(self):
+        start_state = self.env.state
         self.env.run_agents(self.rnd_agent_pair)
-    
+        self.assertNotEqual(self.env.state, start_state)
+
     def test_rollouts(self):
-        self.env.get_rollouts(self.rnd_agent_pair, 5)
+        try:
+            self.env.get_rollouts(self.rnd_agent_pair, 3)
+        except Exception as e:
+            self.fail("Failed to get rollouts from environment:\n{}".format(e))
+
+    def test_one_player_env(self):
+        mdp = OvercookedGridworld.from_layout_name("cramped_room_single")
+        env = OvercookedEnv(mdp, horizon=12)
+        a0 = FixedPlanAgent([stay, w, w, e, e, n, e, interact, w, n, interact])
+        ag = AgentGroup(a0)
+        env.run_agents(ag, display=False)
+        self.assertEqual(
+            env.state.players_pos_and_or,
+            (((2, 1), (0, -1)),)
+        )
+
+    def test_four_player_env_fixed(self):
+        mdp = OvercookedGridworld.from_layout_name("multiplayer_schelling")
+        assert mdp.num_players == 4
+        env = OvercookedEnv(mdp, horizon=16)
+        a0 = FixedPlanAgent([stay, w, w])
+        a1 = FixedPlanAgent([stay, stay, e, e, n, n, n, e, interact, n, n, w, w, w, n, interact, e])
+        a2 = FixedPlanAgent([stay, w, interact, n, n, e, e, e, n, e, n, interact, w])
+        a3 = FixedPlanAgent([e, interact, n, n, w, w, w, n, interact, e, s])
+        ag = AgentGroup(a0, a1, a2, a3)
+        env.run_agents(ag, display=False)
+        self.assertEqual(
+            env.state.players_pos_and_or,
+            (((1, 1), (-1, 0)), ((3, 1), (0, -1)), ((2, 1), (-1, 0)), ((4, 2), (0, 1)))
+        )
 
     def test_multiple_mdp_env(self):
-        mdp0 = OvercookedGridworld.from_layout_name("simple")
-        mdp1 = OvercookedGridworld.from_layout_name("random0")
+        mdp0 = OvercookedGridworld.from_layout_name("cramped_room")
+        mdp1 = OvercookedGridworld.from_layout_name("counter_circuit")
         mdp_fn = lambda: np.random.choice([mdp0, mdp1])
         
         # Default env
@@ -350,18 +248,34 @@ class TestOvercookedEnvironment(unittest.TestCase):
         env.get_rollouts(self.rnd_agent_pair, 5)
 
     def test_starting_position_randomization(self):
-        pass
+        self.base_mdp = OvercookedGridworld.from_layout_name("cramped_room")
+        start_state_fn = self.base_mdp.get_random_start_state_fn(random_start_pos=True, rnd_obj_prob_thresh=0.0)
+        env = OvercookedEnv(self.base_mdp, start_state_fn)
+        start_state = env.state.players_pos_and_or
+        for _ in range(3):
+            env.reset()
+            print(env)
+            curr_terrain = env.state.players_pos_and_or
+            self.assertFalse(np.array_equal(start_state, curr_terrain))
 
     def test_starting_obj_randomization(self):
-        pass
+        self.base_mdp = OvercookedGridworld.from_layout_name("cramped_room")
+        start_state_fn = self.base_mdp.get_random_start_state_fn(random_start_pos=False, rnd_obj_prob_thresh=0.8)
+        env = OvercookedEnv(self.base_mdp, start_state_fn)
+        start_state = env.state.all_objects_list
+        for _ in range(3):
+            env.reset()
+            print(env)
+            curr_terrain = env.state.all_objects_list
+            self.assertFalse(np.array_equal(start_state, curr_terrain))
 
-    def test_random_layout(self):
-
+    def test_failing_rnd_layout(self):
         with self.assertRaises(TypeError):
-            mdp_gen_params = {"none": None}
+            mdp_gen_params = {"None": None}
             mdp_fn = LayoutGenerator.mdp_gen_fn_from_dict(**mdp_gen_params)
             OvercookedEnv(mdp=mdp_fn, **DEFAULT_ENV_PARAMS)
 
+    def test_random_layout(self):
         mdp_gen_params = {"prop_feats": (1, 1)}
         mdp_fn = LayoutGenerator.mdp_gen_fn_from_dict(**mdp_gen_params)
         env = OvercookedEnv(mdp=mdp_fn, **DEFAULT_ENV_PARAMS)
@@ -373,7 +287,7 @@ class TestOvercookedEnvironment(unittest.TestCase):
             curr_terrain = env.mdp.terrain_mtx
             self.assertFalse(np.array_equal(start_terrain, curr_terrain))
 
-        mdp_gen_params = {"mdp_choices": ['simple', 'unident_s']}
+        mdp_gen_params = {"mdp_choices": ['cramped_room', 'asymmetric_advantages']}
         mdp_fn = LayoutGenerator.mdp_gen_fn_from_dict(**mdp_gen_params)
         env = OvercookedEnv(mdp=mdp_fn, **DEFAULT_ENV_PARAMS)
         
@@ -388,9 +302,9 @@ class TestOvercookedEnvironment(unittest.TestCase):
 class TestGymEnvironment(unittest.TestCase):
 
     def setUp(self):
-        self.base_mdp = OvercookedGridworld.from_layout_name("simple")
+        self.base_mdp = OvercookedGridworld.from_layout_name("cramped_room")
         self.env = OvercookedEnv(self.base_mdp, **DEFAULT_ENV_PARAMS)
-        self.rnd_agent_pair = AgentPair(RandomAgent(), RandomAgent())
+        self.rnd_agent_pair = AgentPair(FixedPlanAgent([]), FixedPlanAgent([]))
         np.random.seed(0)
 
     # TODO: write more tests here
