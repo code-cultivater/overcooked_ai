@@ -867,6 +867,16 @@ class MediumLevelActionManager(object):
         closest_feature_pos = self.motion_planner.min_cost_to_feature(player.pos_and_or, feature_locations, with_argmin=True)[1]
         return self._get_ml_actions_for_positions([closest_feature_pos])
 
+    def go_to_closest_feature_or_counter_to_goal(self, goal_pos_and_or, goal_location):
+        """Instead of going to goal_pos_and_or, go to the closest feature or counter to this goal, that ISN'T the goal itself"""
+        valid_locations = self.mdp.get_onion_dispenser_locations() + \
+                                    self.mdp.get_tomato_dispenser_locations() + self.mdp.get_pot_locations() + \
+                                    self.mdp.get_dish_dispenser_locations() + self.counter_drop
+        valid_locations.remove(goal_location)
+        closest_non_goal_feature_pos = self.motion_planner.min_cost_to_feature(
+                                            goal_pos_and_or, valid_locations, with_argmin=True)[1]
+        return self._get_ml_actions_for_positions([closest_non_goal_feature_pos])
+
     def wait_actions(self, player):
         waiting_motion_goal = (player.position, player.orientation)
         return [waiting_motion_goal]
