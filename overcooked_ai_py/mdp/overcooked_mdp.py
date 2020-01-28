@@ -219,7 +219,10 @@ class OvercookedState(object):
         ones held by players.
         """
         all_objs_by_type = self.unowned_objects_by_type.copy()
-        all_objs_by_type.update(self.player_objects_by_type)
+        # all_objs_by_type.update(self.player_objects_by_type)
+        # NOTE: This might change things?? Make sure this works
+        for obj_type, player_objs in self.player_objects_by_type.items():
+            all_objs_by_type[obj_type].extend(player_objs)
         return all_objs_by_type
 
     @property
