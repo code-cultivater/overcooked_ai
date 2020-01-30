@@ -110,6 +110,9 @@ class MotionPlanner(object):
     def is_valid_motion_start_goal_pair(self, start_pos_and_or, goal_pos_and_or, debug=False):
         if not self.is_valid_motion_goal(goal_pos_and_or):
             return False
+        #TODO: TEMP FOR DEBUG:
+        if self.positions_are_connected(start_pos_and_or, goal_pos_and_or) == 'ERROR!':
+            return 'ERROR!'
         if not self.positions_are_connected(start_pos_and_or, goal_pos_and_or):
             return False
         return True

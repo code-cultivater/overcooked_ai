@@ -232,6 +232,9 @@ class Graph(object):
     def are_in_same_cc(self, node1, node2):
         node1_cc_index = [i for i, cc in enumerate(self.connected_components) if node1 in cc]
         node2_cc_index = [i for i, cc in enumerate(self.connected_components) if node2 in cc]
+        #TODO: TEMP, in order to debug:
+        if len(node1_cc_index) != len(node2_cc_index):
+            return 'ERROR!'
         assert len(node1_cc_index) == len(node2_cc_index) == 1, "Node 1 cc: {} \t Node 2 cc: {}".format(node1_cc_index, node2_cc_index)
         return node1_cc_index[0] == node2_cc_index[0]
 
