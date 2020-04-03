@@ -99,6 +99,50 @@ class AgentPair(AgentGroup):
             return super().joint_action(state)
 
 
+class AsymmAgentPairs(object):
+    """
+    AsymmAgentPairs is a group of N agent pairs. Each pair consists of an "single_agent" that can call multiple actions for
+    multiple states simultaneously (such as AgentFromPolicy), and an agent that can't (as it has histoy), eg ToMModel.
+
+    single_agent_indices: list of indices for the single_agent. Therefore each partner in partner_agents will have the
+    other index.
+    """
+
+    def __init__(self, single_agent, partner_agents, single_agent_indices):
+        self.single_agent = single_agent
+        self.partner_agents = partner_agents
+        self.n = len(self.partner_agents)
+        self.single_agent_indices = single_agent_indices
+        [self.partner_agents[i].set_agent_index(1-single_agent_indices[i]) for i in range(self.n)]
+
+    def set_mdp(self, mdp):
+        self.single_agent.set_mdp(mdp)
+        for a in self.partner_agents:
+            a.set_mdp(mdp)
+
+    def reset(self):
+        self.single_agent.reset()
+        for a in self.partner_agents:
+            a.reset()
+
+    def joint_actions(self, states):
+        """Takes in a list of states, then simultaneously finds all actions for the AgentFromPolicy, then finds
+        an action for each of the other agents, then returns a list of actions_and_probs_n."""
+        single_agent_actions_and_probs = self.single_agent.actions(states, self.single_agent_indices)
+        joint_actions_and_probs = []
+        for i in range(self.n):
+            partner_action_and_prob = self.partner_agents[i].action(states[i])
+            single_agent_action_and_prob = tuple([single_agent_actions_and_probs[0][i],
+                                            {'action_probs': single_agent_actions_and_probs[1]['action_probs'][i]}])
+            if self.single_agent_indices[i] == 0:
+                joint_actions_and_probs.append(tuple([single_agent_action_and_prob, partner_action_and_prob]))
+            elif self.single_agent_indices[i] == 1:
+                joint_actions_and_probs.append(tuple([partner_action_and_prob, single_agent_action_and_prob]))
+
+        # OLD: actions_and_probs_n = tuple(a.action(state) for a in self.agents)
+        return joint_actions_and_probs
+
+
 class CoupledPlanningPair(AgentPair):
     """
     Pair of identical coupled planning agents. Enables to search for optimal
@@ -117,7 +161,6 @@ class CoupledPlanningPair(AgentPair):
 
         joint_action_and_infos = [(a, {}) for a in joint_action_plan[0]]
         return joint_action_and_infos
-
 
 
 class AgentFromPolicy(Agent):
@@ -151,9 +194,15 @@ class AgentFromPolicy(Agent):
         except AttributeError as e:
             raise AttributeError("{}. Most likely, need to set the agent_index or mdp of the Agent before calling the action method.".format(e))
 
+    def actions(self, states, player_indices):
+        """
+        Takes in a list of Overcooked states, and a list of indices for this agent, and returns the corresponding actions.
+        """
+        return self.state_policy(states, self.mdp, player_indices, self.stochastic, self.action_probs)
+
     def direct_action(self, obs):
         """
-        A action called optimized for multi-threaded environment simulations
+        An action called optimized for multi-threaded environment simulations
         involving the agent. Takes in SIM_THREADS (as defined when defining the agent)
         number of observations in post-processed form, and returns as many actions.
         """

@@ -281,6 +281,151 @@ class OvercookedEnv(object):
         return stuck_matrix
 
 
+class MultiOvercookedEnv(object):
+    """This stores multiple OvercookedEnvs with identical
+    settings (e.g. same mdp). Initially designed so
+    that we can simultaneously run several overcooked games.
+    """
+
+    def __init__(self, num_envs, mdp, start_state_fn=None, horizon=MAX_HORIZON, debug=False):
+        """
+        mdp (OvercookedGridworld or function): either an instance of the MDP or a function that returns MDP instances
+        start_state_fn (OvercookedState): function that returns start state for the MDP, called at each environment reset
+        horizon (float): number of steps before the environment returns done=True
+        """
+        # Properties shared across all envs:
+        if isinstance(mdp, OvercookedGridworld):
+            self.mdp_generator_fn = lambda: mdp
+            self.variable_mdp = True
+        elif callable(mdp) and isinstance(mdp(), OvercookedGridworld):
+            self.mdp_generator_fn = mdp
+            self.variable_mdp = False
+        else:
+            raise ValueError("Mdp should be either OvercookedGridworld instance or a generating function")
+        self.horizon = horizon
+        self.start_state_fn = start_state_fn
+        if self.horizon >= MAX_HORIZON and self.state.order_list is None and debug:
+            print("Environment has (near-)infinite horizon and no terminal states")
+        self.num_envs = num_envs
+        self.mdp = mdp
+        self.env_params = {"start_state_fn": self.start_state_fn, "horizon": self.horizon}
+        self.envs = [OvercookedEnv(mdp, start_state_fn, horizon, debug) for _ in range(num_envs)]
+        self.reset()
+
+    def reset(self):
+        """Reset all envs"""
+        [self.envs[i].reset() for i in range(self.num_envs)]
+
+    def get_asymm_rollouts(self, asymm_agent_pairs, num_games=1, info=True, metadata_fn=lambda x: {}):
+        """
+        Simulate `num_games` number rollouts with the current agent_pair and returns processed
+        trajectories. NOTE: Only currently set up for num_games = 1
+
+        asymm_agent_pairs: A collection of agents, comprised of a single AgentFromPolicy, and a
+        list of N partner agents, e.g. ToMModels and/or ImitationAgentFromPolicyWithHistorys.
+        The idea is that each of the N partners is paired with AgentFromPolicy. When running
+        get_rollouts, we can send N states to AgentFromPolicy simultaneously; whereas we need
+        query the ToMModels separately.
+
+        See OvercookedEnv.get_rollouts for further documentation.
+        """
+
+        assert num_games == 1, "Only currently set up for num_games = 1"
+
+        trajectories = [{
+            # With shape (n_timesteps, game_len), where game_len might vary across games:
+            "ep_observations": [],
+            "ep_actions": [],
+            "ep_rewards": [], # Individual (sparse) reward values
+            "ep_dones": [], # Individual done values
+            "ep_infos": [],
+
+            # With shape (n_episodes, ):
+            "ep_returns": [], # Sum of sparse rewards across each episode
+            "ep_lengths": [], # Lengths of each episode
+            "mdp_params": [], # Custom MDP params to for each episode
+            "env_params": [], # Custom Env params for each episode
+
+            # Custom metadata key value pairs
+            "metadatas": [] # Final data type is a dictionary of similar format to trajectories
+        } for _ in range(self.num_envs)]
+
+        asymm_agent_pairs.set_mdp(self.mdp)
+        rollout_infos = self.run_asymm_agents(asymm_agent_pairs)
+
+        for i in range(self.num_envs):
+            rollout_info = rollout_infos[i]
+            trajectory, time_taken, tot_rews_sparse, tot_rews_shaped = rollout_info
+            obs, actions, rews, dones, infos = trajectory.T[0], trajectory.T[1], trajectory.T[2], trajectory.T[3], trajectory.T[4]
+            trajectories[i]["ep_observations"].append(obs)
+            trajectories[i]["ep_actions"].append(actions)
+            trajectories[i]["ep_rewards"].append(rews)
+            trajectories[i]["ep_dones"].append(dones)
+            trajectories[i]["ep_infos"].append(infos)
+            trajectories[i]["ep_returns"].append(tot_rews_sparse)
+            trajectories[i]["ep_lengths"].append(time_taken)
+            trajectories[i]["mdp_params"].append(self.mdp.mdp_params)
+            trajectories[i]["env_params"].append(self.env_params)
+            trajectories[i]["metadatas"].append(metadata_fn(rollout_info))
+
+            mu, se = mean_and_std_err(trajectories[i]["ep_returns"])
+            if info: print("Avg reward {:.2f} (std: {:.2f}, se: {:.2f}) over {} games of avg length {}".format(
+                mu, np.std(trajectories[i]["ep_returns"]), se, num_games, np.mean(trajectories[i]["ep_lengths"]))
+            )
+
+            # Converting to numpy arrays
+            trajectories[i] = {k: np.array(v) for k, v in trajectories[i].items()}
+
+            # Merging all metadata dictionaries, assumes same keys throughout all
+            trajectories[i]["metadatas"] = merge_dictionaries(trajectories[i]["metadatas"])
+
+            # TODO: should probably transfer check methods over to Env class
+            from overcooked_ai_py.agents.benchmarking import AgentEvaluator
+            AgentEvaluator.check_trajectories(trajectories[i])
+
+        self.reset()  # Resets all envs
+        asymm_agent_pairs.reset()
+
+        return trajectories
+
+    def run_asymm_agents(self, asymm_agent_pairs):
+        """
+        Trajectories returned are a list of trajectories, one for each pair of agents. Each
+        trajectory is a list of state-action pairs (s_t, joint_a_t, r_t, done_t, info_t).
+        """
+        assert False not in [self.envs[i].cumulative_sparse_rewards == self.envs[i].cumulative_shaped_rewards == 0
+                for i in range(self.num_envs)], "Did not reset environment before running agents"
+
+        trajectories = [[] for _ in range(self.num_envs)]
+        output = []
+        dones = [False for _ in range(self.num_envs)]
+
+        while not dones[0]:
+
+            assert [dones[0] == dones[i] for i in range(self.num_envs)], "Not all envs are done at the same time!"
+            states_t = [self.envs[i].state for i in range(self.num_envs)]
+            joint_actions_and_infos = asymm_agent_pairs.joint_actions(states_t)
+
+            for i in range(self.num_envs):
+                # Process the output for each env:
+                a_t, a_info_t = zip(*joint_actions_and_infos[i])
+                assert all(a in Action.ALL_ACTIONS for a in a_t)
+                assert all(type(a_info) is dict for a_info in a_info_t)
+
+                # Step this env (independently of the other envs):
+                s_tp1, r_t, done, info = self.envs[i].step(a_t)
+                info["agent_infos"] = a_info_t
+                trajectories[i].append((states_t[i], a_t, r_t, done, info))
+                dones[i] = done
+                if done:
+                    output.append([np.array(trajectories[i]), self.envs[i].t,
+                              self.envs[i].cumulative_sparse_rewards, self.envs[i].cumulative_shaped_rewards])
+
+        assert [len(trajectories[i]) == self.envs[i].t for i in range(self.num_envs)], \
+                    "Trajectory has wrong length"
+        return output
+
+
 class Overcooked(gym.Env):
     """
     Wrapper for the Env class above that is SOMEWHAT compatible with the standard gym API.
