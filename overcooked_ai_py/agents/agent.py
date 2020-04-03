@@ -115,6 +115,8 @@ class AsymmAgentPairs(object):
         self.single_agent_indices = single_agent_indices
         [self.partner_agents[i].set_agent_index(1-single_agent_indices[i]) for i in range(self.n)]
 
+        assert len(single_agent_indices) == len(partner_agents) == self.n
+
     def set_mdp(self, mdp):
         self.single_agent.set_mdp(mdp)
         for a in self.partner_agents:

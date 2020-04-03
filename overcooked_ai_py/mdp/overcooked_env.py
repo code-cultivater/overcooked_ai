@@ -316,7 +316,7 @@ class MultiOvercookedEnv(object):
         """Reset all envs"""
         [self.envs[i].reset() for i in range(self.num_envs)]
 
-    def get_asymm_rollouts(self, asymm_agent_pairs, num_games=1, info=True, metadata_fn=lambda x: {}):
+    def get_asymm_rollouts(self, asymm_agent_pairs, num_games=1, info=False, metadata_fn=lambda x: {}):
         """
         Simulate `num_games` number rollouts with the current agent_pair and returns processed
         trajectories. NOTE: Only currently set up for num_games = 1
