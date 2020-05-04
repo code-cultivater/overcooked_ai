@@ -102,7 +102,7 @@ class AgentPair(AgentGroup):
 class AsymmAgentPairs(object):
     """
     AsymmAgentPairs is a group of N agent pairs. Each pair consists of an "single_agent" that can call multiple actions for
-    multiple states simultaneously (such as AgentFromPolicy), and an agent that can't (as it has histoy), eg ToMModel.
+    multiple states simultaneously (such as AgentFromPolicy), and an agent that can't (as it has history), eg ToMModel.
 
     single_agent_indices: list of indices for the single_agent. Therefore each partner in partner_agents will have the
     other index.
@@ -170,18 +170,26 @@ class AgentFromPolicy(Agent):
     Defines an agent from a `state_policy` and `direct_policy` functions
     """
 
-    def __init__(self, state_policy, direct_policy, stochastic=True, action_probs=False):
+    def __init__(self, state_policy, direct_policy, stochastic=True, action_probs=False,
+                 is_lstm=False, initial_lstm_state=None, mask=None):
         """
         state_policy (fn): a function that takes in an OvercookedState instance and returns corresponding actions
         direct_policy (fn): a function that takes in a preprocessed OvercookedState instances and returns actions
         stochastic (Bool): Whether the agent should sample from policy or take argmax
         action_probs (Bool): Whether agent should return action probabilities or a sampled action
+        is_lstm (Bool): Whether agent has an lstm model
+        state_lstm: The state passed from one lstm cell to the next (in time). It contains the hidden state and the cell memory
+        initial_lstm_state: The initial value of the state, which we reset to after each episode
         """
         self.state_policy = state_policy
         self.direct_policy = direct_policy
         self.history = []
         self.stochastic = stochastic
         self.action_probs = action_probs
+        self.is_lstm = is_lstm
+        self.initial_lstm_state = initial_lstm_state  # State to be inputted/outputted from the lstm between time steps. Contains both the memory and the hidden state
+        self.state_lstm = initial_lstm_state
+        self.mask = mask  # Needed for the lstm (see "reset" below)
 
     def action(self, state):
         """
@@ -192,7 +200,12 @@ class AgentFromPolicy(Agent):
         """
         self.history.append(state)
         try:
-            return self.state_policy(state, self.mdp, self.agent_index, self.stochastic, self.action_probs)
+            if not self.is_lstm:
+                return self.state_policy(state, self.mdp, self.agent_index, self.stochastic, self.action_probs)
+            else:
+                action, action_probs, self.state_lstm = self.state_policy(state, self.mdp, self.agent_index,
+                                      self.stochastic, self.action_probs, state_lstm=self.state_lstm, dones=self.mask)
+                return action, action_probs
         except AttributeError as e:
             raise AttributeError("{}. Most likely, need to set the agent_index or mdp of the Agent before calling the action method.".format(e))
 
@@ -200,7 +213,12 @@ class AgentFromPolicy(Agent):
         """
         Takes in a list of Overcooked states, and a list of indices for this agent, and returns the corresponding actions.
         """
-        return self.state_policy(states, self.mdp, player_indices, self.stochastic, self.action_probs)
+        if not self.is_lstm:
+            return self.state_policy(states, self.mdp, player_indices, self.stochastic, self.action_probs)
+        else:
+            actions, action_probs, self.state_lstm = self.state_policy(states, self.mdp, player_indices,
+                                    self.stochastic, self.action_probs, state_lstm=self.state_lstm, dones=self.mask)
+            return actions, action_probs
 
     def direct_action(self, obs):
         """
@@ -208,10 +226,21 @@ class AgentFromPolicy(Agent):
         involving the agent. Takes in SIM_THREADS (as defined when defining the agent)
         number of observations in post-processed form, and returns as many actions.
         """
-        return self.direct_policy(obs)
+        if not self.is_lstm:
+            return self.direct_policy(obs)
+        else:
+            actions, action_probs, self.state_lstm = self.direct_policy(obs, state_lstm=self.state_lstm,
+                                                                                                    dones=self.mask)
+            return actions, action_probs
 
     def reset(self):
         self.history = []
+        if self.is_lstm:
+            self.state_lstm = self.initial_lstm_state  # Reset to the initial lstm state
+            self.mask = [False] * len(self.state_lstm)  # self.mask is used as a mask for the lstm so that at the end of
+            # an epsiode the previous memory is ignored by setting self.mask = dones. However, we currently reset the state_lstm after each episode,
+            # so there's no need to keep track of the dones here. #TODO: This might need modifying if we change how this agent is. e.g. reset self.dones here (to True), then set to False after one timestep
+            #TODO: It would be better to have dones as an input to the action... but this involves changing *every* agent's action method!
 
 class RandomAgent(Agent):
     """
